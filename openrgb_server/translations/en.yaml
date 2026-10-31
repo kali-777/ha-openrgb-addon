@@ -1,0 +1,31 @@
+configuration:
+  server_port:
+    name: "OpenRGB SDK Server Port"
+    description: "TCP port for the OpenRGB SDK Server (Default: 6742). Used by Home Assistant OpenRGB integration and LedFx."
+  server_host:
+    name: "Bind Host / IP Address"
+    description: "IP address to bind the SDK server to (Default: 0.0.0.0 to allow both local 127.0.0.1 and LAN clients)."
+  log_level:
+    name: "Log Level"
+    description: "Verbosity level for OpenRGB logs."
+  list_devices_on_start:
+    name: "List OPENRGB IDs in Log on Startup"
+    description: "Runs 'openrgb --list-devices' on startup so you can easily see each device's OPENRGB ID (0, 1, 2...) and LED count in the Add-on Log tab for LedFx."
+  wiz_ips:
+    name: "Philips WiZ Device IP Addresses"
+    description: "List of static local IPv4 addresses for Philips WiZ Light Bars / Bulbs (e.g. 192.168.2.65). Ensure 'Allow Local Communication' is enabled in the WiZ app."
+  wiz_white_strategy:
+    name: "Philips WiZ White Channel Strategy"
+    description: "How OpenRGB calculates the white channel on RGBW WiZ lights (Default: Average)."
+  yeelight_ips:
+    name: "Xiaomi Yeelight Device IP Addresses"
+    description: "List of static local IPv4 addresses for Xiaomi Yeelight Strips / Lamps. Ensure 'LAN Control' is enabled in the Yeelight app."
+  yeelight_music_mode:
+    name: "Yeelight Music Mode (Fast Streaming)"
+    description: "Enables Yeelight TCP Music Mode for high-framerate audio-reactive streaming from LedFx."
+  kasa_ips:
+    name: "TP-Link Kasa Device IP Addresses"
+    description: "List of static local IPv4 addresses for TP-Link Kasa Smart Lights."
+  extra_args:
+    name: "Extra CLI Arguments"
+    description: "Optional extra command-line flags passed to the openrgb binary."
