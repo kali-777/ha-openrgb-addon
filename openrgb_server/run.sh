@@ -21,9 +21,9 @@ YEELIGHT_MUSIC_MODE=$(jq -r '.yeelight_music_mode // true' "${OPTIONS_FILE}")
 EXTRA_ARGS=$(jq -r '.extra_args // ""' "${OPTIONS_FILE}")
 
 echo "=================================================================="
-echo " Starting OpenRGB SDK Server Add-on for Home Assistant OS (v1.0.2)"
+echo " Starting OpenRGB SDK Server Add-on for Home Assistant OS (v1.0.3)"
 echo "=================================================================="
-echo "OpenRGB Version : $(openrgb --version 2>/dev/null || echo '1.0+')"
+echo "OpenRGB Version : $(openrgb --version 2>/dev/null | head -n 1 || echo 'OpenRGB 1.0+')"
 echo "Bind Address    : ${SERVER_HOST}:${SERVER_PORT}"
 echo "Config Directory: ${CONFIG_DIR}"
 
@@ -79,22 +79,29 @@ echo "Configured Kasa Smart IPs  : $(echo "${KASA_JSON}" | jq -r 'map(.ip) | joi
 
 echo "------------------------------------------------------------------"
 if [ "${LIST_DEVICES}" = "true" ]; then
-    echo "Scanning OpenRGB Devices to print OPENRGB IDs for LedFx..."
-    QT_QPA_PLATFORM=offscreen openrgb --config "${CONFIG_DIR}" --noautoconnect --list-devices || true
+    echo "Detected OpenRGB Devices (use these IDs in LedFx):"
+    QT_QPA_PLATFORM=offscreen openrgb --config "${CONFIG_DIR}" --noautoconnect --list-devices 2>&1 \
+      | grep --line-buffered -vE '(\[Dialog \]|recv_select failed receiving magic)' || true
     echo "------------------------------------------------------------------"
 fi
 
-VERBOSE_FLAG=""
-if [ "${LOG_LEVEL}" = "debug" ] || [ "${LOG_LEVEL}" = "trace" ]; then
-    VERBOSE_FLAG="--loglevel 6"
-fi
-
 echo "Launching OpenRGB SDK Server on ${SERVER_HOST}:${SERVER_PORT}..."
-exec openrgb \
-    --config "${CONFIG_DIR}" \
-    --noautoconnect \
-    --server \
-    --server-host "${SERVER_HOST}" \
-    --server-port "${SERVER_PORT}" \
-    ${VERBOSE_FLAG} \
-    ${EXTRA_ARGS}
+
+if [ "${LOG_LEVEL}" = "debug" ] || [ "${LOG_LEVEL}" = "trace" ]; then
+    exec openrgb \
+        --config "${CONFIG_DIR}" \
+        --noautoconnect \
+        --server \
+        --server-host "${SERVER_HOST}" \
+        --server-port "${SERVER_PORT}" \
+        --loglevel 6 \
+        ${EXTRA_ARGS}
+else
+    exec openrgb \
+        --config "${CONFIG_DIR}" \
+        --noautoconnect \
+        --server \
+        --server-host "${SERVER_HOST}" \
+        --server-port "${SERVER_PORT}" \
+        ${EXTRA_ARGS} > >(grep --line-buffered -vE '(\[Dialog \]|recv_select failed receiving magic)') 2>&1
+fi
