@@ -1,0 +1,27 @@
+name: Fetch Official OpenRGB Add-on Icons
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  commit-icons:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Official OpenRGB Icon & Logo
+        run: |
+          if [ ! -f openrgb_server/icon.png ] || [ ! -f openrgb_server/logo.png ]; then
+            curl -fsSL https://raw.githubusercontent.com/CalcProgrammer1/OpenRGB/master/qt/org.openrgb.OpenRGB.png -o openrgb_server/icon.png
+            cp openrgb_server/icon.png openrgb_server/logo.png
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add openrgb_server/icon.png openrgb_server/logo.png
+            git commit -m "chore: add official OpenRGB icon.png and logo.png [skip ci]"
+            git push
+          fi

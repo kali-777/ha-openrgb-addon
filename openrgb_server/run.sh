@@ -5,12 +5,11 @@ OPTIONS_FILE="/data/options.json"
 CONFIG_DIR="/config/OpenRGB"
 CONFIG_FILE="${CONFIG_DIR}/OpenRGB.json"
 
-mkdir -p "${CONFIG_DIR}" /etc/udev/rules.d /usr/lib/udev/rules.d
+mkdir -p "${CONFIG_DIR}" /etc/udev/rules.d
 
-# Ensure 60-openrgb.rules is present in /etc/udev/rules.d so OpenRGB's udev check is satisfied
-if [ -f /usr/lib/udev/rules.d/60-openrgb.rules ] && [ ! -s /etc/udev/rules.d/60-openrgb.rules ]; then
-    cp /usr/lib/udev/rules.d/60-openrgb.rules /etc/udev/rules.d/60-openrgb.rules
-fi
+# Keep ONLY /etc/udev/rules.d/60-openrgb.rules so OpenRGB sees neither missing nor duplicate udev rules
+touch /etc/udev/rules.d/60-openrgb.rules
+rm -f /usr/lib/udev/rules.d/60-openrgb.rules
 
 # Read options from Home Assistant /data/options.json
 SERVER_PORT=$(jq -r '.server_port // 6742' "${OPTIONS_FILE}")
@@ -22,7 +21,7 @@ YEELIGHT_MUSIC_MODE=$(jq -r '.yeelight_music_mode // true' "${OPTIONS_FILE}")
 EXTRA_ARGS=$(jq -r '.extra_args // ""' "${OPTIONS_FILE}")
 
 echo "=================================================================="
-echo " Starting OpenRGB SDK Server Add-on for Home Assistant OS (v1.0.1)"
+echo " Starting OpenRGB SDK Server Add-on for Home Assistant OS (v1.0.2)"
 echo "=================================================================="
 echo "OpenRGB Version : $(openrgb --version 2>/dev/null || echo '1.0+')"
 echo "Bind Address    : ${SERVER_HOST}:${SERVER_PORT}"
@@ -59,7 +58,7 @@ KASA_JSON=$(jq -c '
 ' "${OPTIONS_FILE}")
 
 # Merge configured network devices into OpenRGB.json while preserving existing settings/detectors
-# Also explicitly enable HyperX DuoCast and HyperX QuadCast detectors
+# Explicitly enable HyperX DuoCast and HyperX QuadCast detectors
 TMP_JSON=$(mktemp)
 jq \
   --argjson wiz "${WIZ_JSON}" \
@@ -79,21 +78,9 @@ echo "Configured Yeelight IPs    : $(echo "${YEELIGHT_JSON}" | jq -r 'map(.ip) |
 echo "Configured Kasa Smart IPs  : $(echo "${KASA_JSON}" | jq -r 'map(.ip) | join(", ")')"
 
 echo "------------------------------------------------------------------"
-echo "Connected USB & HIDRAW Devices:"
-lsusb || true
-echo "HIDRAW nodes in /dev:"
-ls -la /dev/hidraw* 2>/dev/null || echo "No /dev/hidraw nodes found"
-for f in /sys/class/hidraw/hidraw*/device/uevent; do
-    if [ -f "$f" ]; then
-        echo "--- $(dirname "$f") ---"
-        grep -E "HID_NAME|HID_ID" "$f" || true
-    fi
-done
-echo "------------------------------------------------------------------"
-
 if [ "${LIST_DEVICES}" = "true" ]; then
     echo "Scanning OpenRGB Devices to print OPENRGB IDs for LedFx..."
-    QT_QPA_PLATFORM=offscreen openrgb --config "${CONFIG_DIR}" --noautoconnect --loglevel 6 --list-devices || true
+    QT_QPA_PLATFORM=offscreen openrgb --config "${CONFIG_DIR}" --noautoconnect --list-devices || true
     echo "------------------------------------------------------------------"
 fi
 

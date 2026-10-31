@@ -13,14 +13,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     udev \
     libhidapi-hidraw0 \
     libhidapi-libusb0 \
+    libhidapi-dev \
     libusb-1.0-0 \
+    libusb-1.0-0-dev \
     ca-certificates \
-    && mkdir -p /etc/udev/rules.d /usr/lib/udev/rules.d /lib/udev/rules.d \
+    && mkdir -p /etc/udev/rules.d \
     && if [ -f /usr/lib/udev/rules.d/60-openrgb.rules ]; then \
-         cp /usr/lib/udev/rules.d/60-openrgb.rules /etc/udev/rules.d/60-openrgb.rules; \
+         mv /usr/lib/udev/rules.d/60-openrgb.rules /etc/udev/rules.d/60-openrgb.rules; \
        else \
-         touch /etc/udev/rules.d/60-openrgb.rules /usr/lib/udev/rules.d/60-openrgb.rules; \
+         touch /etc/udev/rules.d/60-openrgb.rules; \
        fi \
+    && rm -f /usr/lib/udev/rules.d/60-openrgb.rules /lib/udev/rules.d/60-openrgb.rules \
+    && ldconfig \
     && rm -rf /var/lib/apt/lists/*
 
 COPY run.sh /run.sh
