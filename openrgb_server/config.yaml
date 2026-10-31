@@ -1,5 +1,5 @@
 name: "OpenRGB SDK Server"
-version: "1.0.0"
+version: "1.0.1"
 slug: "openrgb_server"
 description: "Headless OpenRGB SDK Server (v1.0+) for Home Assistant OS & LedFx — supports direct USB HID (HyperX DuoCast, Razer, etc.), Philips WiZ, Xiaomi Yeelight, and Kasa Smart lights."
 url: "https://github.com/kali-777/ha-openrgb-addon"
