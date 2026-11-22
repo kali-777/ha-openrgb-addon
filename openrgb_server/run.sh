@@ -32,7 +32,7 @@ cleanup() {
 trap cleanup EXIT SIGINT SIGTERM
 
 echo "=================================================================="
-echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.1.3)"
+echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.1.4)"
 echo "=================================================================="
 echo "OpenRGB Version : $(openrgb --version 2>/dev/null | head -n 1 || echo 'OpenRGB 1.0+')"
 echo "Bind Address    : ${SERVER_HOST}:${SERVER_PORT}"
@@ -43,7 +43,7 @@ echo "I2C Bus Devices : $(ls -d /dev/i2c* 2>/dev/null | tr '\n' ' ' || echo 'Non
 if [ "${ENABLE_DDC}" = "true" ]; then
     echo "------------------------------------------------------------------"
     echo "Launching Generic DDC/CI Monitor Control Service..."
-    python3 /ddc_service.py &
+    python3 -u /ddc_service.py &
     DDC_PID=$!
     echo "DDC/CI Monitor Service started (PID: ${DDC_PID})"
 fi

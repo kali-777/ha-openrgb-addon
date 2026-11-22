@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.4] - 2026-11-23
+
+### Fixed
+- **ASUS VA34VCPSR Capabilities & USB-C (`0x1A`) Mapping**: Added hardware MCCS input code `0x1A` mapped to `USB-C` for ASUS ultrawide displays. Corrected capabilities parser to read exact physical ports (`DisplayPort-1`, `HDMI-1`, `USB-C`), eliminating non-existent phantom ports (`DisplayPort-2`, `HDMI-2`).
+- **Input Source & Hardware Terse Parsing**: Fixed hex parser for `ddcutil getvcp 60 --terse` to handle `x11`, `x0f`, `x1a` values without leading zero, eliminating initial null/unknown input state.
+- **Hardware Speaker Volume & Audio Mute Discovery**: Added regex fallback parser for `ddcutil getvcp 62` (`Audio speaker volume`) and `8D` (`Audio mute`), properly surfacing volume and mute controls for internal monitor speakers.
+- **Real-Time App Logging**: Added `PYTHONUNBUFFERED=1` and `-u` flag to `ddc_service.py` to stream all DDC hardware diagnostics directly into the Home Assistant App Logs in real time.
+- **Masked Password Field**: Configured `mqtt_password: "password"` in add-on schema to securely mask MQTT broker passwords in the Home Assistant UI.
+
+---
+
 ## [1.1.3] - 2026-11-23
 
 ### Fixed

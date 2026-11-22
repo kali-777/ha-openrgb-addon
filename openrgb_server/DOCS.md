@@ -43,7 +43,7 @@ The add-on runs an embedded HTTP REST server on port `6743` (configurable) for d
 - **`GET /input?to=<source>&display=1`**:
   Switches the active display input. Accepts input names or hex codes:
   - `to=HDMI-1` or `to=0x11` (Personal Windows Laptop)
-  - `to=USB-C` or `to=0x13` (Work Laptop)
+  - `to=USB-C` or `to=0x1a` (Work Laptop)
   - `to=DisplayPort-1` or `to=0x0f` (Home Assistant OS / Mini PC)
   - Shortcuts: `to=work`, `to=windows`, `to=haos`
 
