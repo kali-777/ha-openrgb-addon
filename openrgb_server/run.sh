@@ -19,13 +19,33 @@ LIST_DEVICES=$(jq -r '.list_devices_on_start // true' "${OPTIONS_FILE}")
 WIZ_WHITE_STRATEGY=$(jq -r '.wiz_white_strategy // "Average"' "${OPTIONS_FILE}")
 YEELIGHT_MUSIC_MODE=$(jq -r '.yeelight_music_mode // true' "${OPTIONS_FILE}")
 EXTRA_ARGS=$(jq -r '.extra_args // ""' "${OPTIONS_FILE}")
+ENABLE_DDC=$(jq -r '.enable_ddc // true' "${OPTIONS_FILE}")
+
+DDC_PID=""
+
+cleanup() {
+    echo "Stopping background services..."
+    if [ -n "${DDC_PID}" ]; then
+        kill "${DDC_PID}" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT SIGINT SIGTERM
 
 echo "=================================================================="
-echo " Starting OpenRGB SDK Server Add-on for Home Assistant OS (v1.0.3)"
+echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.0.4)"
 echo "=================================================================="
 echo "OpenRGB Version : $(openrgb --version 2>/dev/null | head -n 1 || echo 'OpenRGB 1.0+')"
 echo "Bind Address    : ${SERVER_HOST}:${SERVER_PORT}"
 echo "Config Directory: ${CONFIG_DIR}"
+
+# Start Generic DDC/CI Monitor Control Service if enabled
+if [ "${ENABLE_DDC}" = "true" ]; then
+    echo "------------------------------------------------------------------"
+    echo "Launching Generic DDC/CI Monitor Control Service..."
+    python3 /ddc_service.py &
+    DDC_PID=$!
+    echo "DDC/CI Monitor Service started (PID: ${DDC_PID})"
+fi
 
 # Initialize OpenRGB.json if it does not exist yet
 if [ ! -f "${CONFIG_FILE}" ]; then
@@ -58,7 +78,6 @@ KASA_JSON=$(jq -c '
 ' "${OPTIONS_FILE}")
 
 # Merge configured network devices into OpenRGB.json while preserving existing settings/detectors
-# Explicitly enable HyperX DuoCast and HyperX QuadCast detectors
 TMP_JSON=$(mktemp)
 jq \
   --argjson wiz "${WIZ_JSON}" \
@@ -88,20 +107,24 @@ fi
 echo "Launching OpenRGB SDK Server on ${SERVER_HOST}:${SERVER_PORT}..."
 
 if [ "${LOG_LEVEL}" = "debug" ] || [ "${LOG_LEVEL}" = "trace" ]; then
-    exec openrgb \
+    openrgb \
         --config "${CONFIG_DIR}" \
         --noautoconnect \
         --server \
         --server-host "${SERVER_HOST}" \
         --server-port "${SERVER_PORT}" \
         --loglevel 6 \
-        ${EXTRA_ARGS}
+        ${EXTRA_ARGS} &
+    OPENRGB_PID=$!
+    wait ${OPENRGB_PID}
 else
-    exec openrgb \
+    openrgb \
         --config "${CONFIG_DIR}" \
         --noautoconnect \
         --server \
         --server-host "${SERVER_HOST}" \
         --server-port "${SERVER_PORT}" \
-        ${EXTRA_ARGS} > >(grep --line-buffered -vE '(\[Dialog \]|recv_select failed receiving magic)') 2>&1
+        ${EXTRA_ARGS} 2>&1 | grep --line-buffered -vE '(\[Dialog \]|recv_select failed receiving magic)' &
+    OPENRGB_PID=$!
+    wait ${OPENRGB_PID}
 fi

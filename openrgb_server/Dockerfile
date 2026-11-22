@@ -7,6 +7,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openrgb \
+    ddcutil \
+    python3 \
+    python3-paho-mqtt \
     jq \
     usbutils \
     i2c-tools \
@@ -27,8 +30,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ldconfig \
     && rm -rf /var/lib/apt/lists/*
 
+COPY ddc_service.py /ddc_service.py
 COPY run.sh /run.sh
-RUN chmod a+x /run.sh
+RUN chmod a+x /run.sh /ddc_service.py
 
 WORKDIR /config
 
