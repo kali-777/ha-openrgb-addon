@@ -2,8 +2,9 @@
 """
 Generic DDC/CI Monitor Controller for Home Assistant OS
 Provides:
-  1. REST API on port 6743 (by default) for direct input/brightness/volume/power switching
-  2. Home Assistant MQTT Auto-Discovery (select, number, button entities)
+  1. REST API on port 6743 (by default) for direct input/brightness/volume/mute/power switching
+  2. Home Assistant MQTT Auto-Discovery (select, number, switch, button entities)
+  3. Dynamic naming standard: <vendor>_<model>_monitor_<feature> (e.g., asus_va34vcpsr_monitor_input_source)
 Works dynamically with any monitor supported by ddcutil.
 """
 
@@ -33,6 +34,30 @@ if os.path.exists(OPTIONS_FILE):
             POLL_INTERVAL = int(opts.get("ddc_poll_interval", 60))
     except Exception as e:
         print(f"[DDC] Error loading options.json: {e}", file=sys.stderr)
+
+# Common 3-letter EDID manufacturer lookup table
+MFG_LOOKUP = {
+    "AUS": "ASUS",
+    "SAM": "Samsung",
+    "DEL": "Dell",
+    "GSM": "LG",
+    "LGD": "LG",
+    "ACR": "Acer",
+    "BNQ": "BenQ",
+    "BEN": "BenQ",
+    "AOC": "AOC",
+    "HWP": "HP",
+    "HPN": "HP",
+    "LEN": "Lenovo",
+    "MSI": "MSI",
+    "GIG": "Gigabyte",
+    "VSC": "ViewSonic",
+    "SNY": "Sony",
+    "NEC": "NEC",
+    "IIY": "Iiyama",
+    "APP": "Apple",
+    "PHL": "Philips",
+}
 
 VESA_INPUT_MAP = {
     0x01: "VGA-1",
@@ -70,6 +95,7 @@ INPUT_NAME_TO_HEX.update({
     "hdmi2": 0x12,
     "hdmi3": 0x14,
     "usbc": 0x13,
+    "usb-c": 0x13,
     "typec": 0x13,
     "type-c": 0x13,
     "work": 0x13,
@@ -87,6 +113,10 @@ def run_ddcutil(*args):
         return -1, "", "Timeout waiting for ddcutil"
     except Exception as e:
         return -1, "", str(e)
+
+
+def clean_identifier(text):
+    return re.sub(r"[^a-zA-Z0-9_]", "_", text.strip()).strip("_").lower()
 
 
 class MonitorManager:
@@ -115,7 +145,10 @@ class MonitorManager:
             bus = bus_match.group(1).strip() if bus_match else ""
 
             mfg_match = re.search(r"Mfg id:\s+([^\n]+)", block)
-            mfg = mfg_match.group(1).strip() if mfg_match else "Generic"
+            mfg_raw = mfg_match.group(1).strip() if mfg_match else "Generic"
+            # Parse manufacturer ID (e.g. 'AUS - UNK' -> 'ASUS')
+            mfg_code = mfg_raw.split("-")[0].strip().split()[0].upper()
+            mfg = MFG_LOOKUP.get(mfg_code, mfg_raw.split("-")[0].strip() or "Generic")
 
             model_match = re.search(r"Model:\s+([^\n]+)", block)
             model = model_match.group(1).strip() if model_match else f"Monitor_{disp_id}"
@@ -124,10 +157,19 @@ class MonitorManager:
             sn = sn_match.group(1).strip() if sn_match else f"disp{disp_id}"
             clean_sn = re.sub(r"[^A-Za-z0-9_-]", "_", sn)
 
+            mfg_clean = clean_identifier(mfg)
+            model_clean = clean_identifier(model)
+            # Standard prefix requested: <vendor>_<model>_monitor
+            entity_prefix = f"{mfg_clean}_{model_clean}_monitor"
+            device_id = f"ddc_{mfg_clean}_{model_clean}_{clean_sn.lower()}"
+
             cur_input_hex = self.get_vcp(disp_id, 0x60)
             cur_input_name = VESA_INPUT_MAP.get(cur_input_hex, f"0x{cur_input_hex:02x}" if cur_input_hex is not None else "Unknown")
             cur_brightness = self.get_vcp(disp_id, 0x10)
+            cur_contrast = self.get_vcp(disp_id, 0x12)
             cur_volume = self.get_vcp(disp_id, 0x62)
+            cur_mute_val = self.get_vcp(disp_id, 0x8D)
+            cur_mute = (cur_mute_val == 1) if cur_mute_val is not None else False
 
             supported_inputs = self.query_supported_inputs(disp_id)
             if not supported_inputs:
@@ -145,17 +187,23 @@ class MonitorManager:
                 "mfg": mfg,
                 "model": model,
                 "serial": clean_sn,
+                "entity_prefix": entity_prefix,
+                "device_id": device_id,
+                "device_name": f"{mfg} {model} Monitor",
                 "current_input": f"0x{cur_input_hex:02x}" if cur_input_hex is not None else None,
                 "current_input_name": cur_input_name,
                 "supported_input_codes": [f"0x{h:02x}" for h in supported_inputs],
                 "input_options": input_options,
                 "brightness": cur_brightness,
+                "contrast": cur_contrast,
                 "volume": cur_volume,
+                "mute": cur_mute,
                 "has_audio": (cur_volume is not None),
+                "has_mute": (cur_mute_val is not None),
             }
             monitors.append(mon)
             print(f"[DDC] Discovered: Display {disp_id} - {mfg} {model} (SN: {clean_sn}) on {bus}")
-            print(f"[DDC]   Current Input: {cur_input_name} | Supported: {', '.join(input_options)}")
+            print(f"[DDC]   Entity Prefix: {entity_prefix} | Current Input: {cur_input_name} | Audio: {mon['has_audio']}")
 
         with self.lock:
             self.monitors = monitors
@@ -224,6 +272,15 @@ class MonitorManager:
                     m["current_input_name"] = VESA_INPUT_MAP.get(val, f"0x{val:02x}")
         return ok, msg
 
+    def set_mute(self, disp_id, mute_on):
+        val = 1 if mute_on else 2
+        ok, msg = self.set_vcp(disp_id, 0x8D, val)
+        if ok:
+            for m in self.monitors:
+                if m["display"] == disp_id:
+                    m["mute"] = mute_on
+        return ok, msg
+
 
 manager = MonitorManager()
 
@@ -258,9 +315,9 @@ class MQTTClientManager:
 
                 parts = topic.split("/")
                 if len(parts) >= 5 and parts[0] == "ha_openrgb" and parts[1] == "ddc":
-                    serial = parts[2]
+                    dev_id = parts[2]
                     comp = parts[3]
-                    mon = next((m for m in self.mgr.monitors if m["serial"] == serial), None)
+                    mon = next((m for m in self.mgr.monitors if m["device_id"] == dev_id), None)
                     if not mon:
                         return
 
@@ -279,6 +336,15 @@ class MQTTClientManager:
                                 self.publish_states(mon)
                         except ValueError:
                             pass
+                    elif comp == "contrast":
+                        try:
+                            val = int(payload)
+                            ok, _ = self.mgr.set_vcp(disp_id, 0x12, val)
+                            if ok:
+                                mon["contrast"] = val
+                                self.publish_states(mon)
+                        except ValueError:
+                            pass
                     elif comp == "volume":
                         try:
                             val = int(payload)
@@ -288,6 +354,11 @@ class MQTTClientManager:
                                 self.publish_states(mon)
                         except ValueError:
                             pass
+                    elif comp == "mute":
+                        is_on = payload.upper() in ("ON", "1", "TRUE")
+                        ok, _ = self.mgr.set_mute(disp_id, is_on)
+                        if ok:
+                            self.publish_states(mon)
             except Exception as e:
                 print(f"[DDC] Error processing MQTT message: {e}", file=sys.stderr)
 
@@ -305,75 +376,135 @@ class MQTTClientManager:
             return
 
         for mon in self.mgr.monitors:
-            sn = mon["serial"]
+            dev_id = mon["device_id"]
+            prefix = mon["entity_prefix"]
             mfg = mon["mfg"]
             model = mon["model"]
             device_info = {
-                "identifiers": [f"ddc_{sn}"],
-                "name": f"{mfg} {model}",
+                "identifiers": [dev_id],
+                "name": mon["device_name"],
                 "manufacturer": mfg,
                 "model": model,
-                "serial_number": sn,
+                "serial_number": mon["serial"],
             }
 
-            input_disc_topic = f"homeassistant/select/ddc_{sn}_input/config"
+            # 1. Input Source Select Entity
+            # e.g., select.asus_va34vcpsr_monitor_input_source
+            input_disc_topic = f"homeassistant/select/{dev_id}_input/config"
             input_config = {
                 "name": "Input Source",
-                "unique_id": f"ddc_{sn}_input_source",
+                "has_entity_name": True,
+                "object_id": f"{prefix}_input_source",
+                "unique_id": f"{dev_id}_input_source",
                 "device": device_info,
                 "icon": "mdi:video-input-hdmi",
                 "options": mon["input_options"],
-                "state_topic": f"ha_openrgb/ddc/{sn}/input/state",
-                "command_topic": f"ha_openrgb/ddc/{sn}/input/set",
+                "state_topic": f"ha_openrgb/ddc/{dev_id}/input/state",
+                "command_topic": f"ha_openrgb/ddc/{dev_id}/input/set",
             }
             self.client.publish(input_disc_topic, json.dumps(input_config), retain=True)
 
-            bright_disc_topic = f"homeassistant/number/ddc_{sn}_brightness/config"
+            # 2. Brightness Number Entity
+            # e.g., number.asus_va34vcpsr_monitor_brightness
+            bright_disc_topic = f"homeassistant/number/{dev_id}_brightness/config"
             bright_config = {
                 "name": "Brightness",
-                "unique_id": f"ddc_{sn}_brightness",
+                "has_entity_name": True,
+                "object_id": f"{prefix}_brightness",
+                "unique_id": f"{dev_id}_brightness",
                 "device": device_info,
                 "icon": "mdi:brightness-6",
                 "min": 0,
                 "max": 100,
                 "step": 1,
-                "state_topic": f"ha_openrgb/ddc/{sn}/brightness/state",
-                "command_topic": f"ha_openrgb/ddc/{sn}/brightness/set",
+                "state_topic": f"ha_openrgb/ddc/{dev_id}/brightness/state",
+                "command_topic": f"ha_openrgb/ddc/{dev_id}/brightness/set",
             }
             self.client.publish(bright_disc_topic, json.dumps(bright_config), retain=True)
 
+            # 3. Contrast Number Entity
+            # e.g., number.asus_va34vcpsr_monitor_contrast
+            if mon.get("contrast") is not None:
+                contrast_disc_topic = f"homeassistant/number/{dev_id}_contrast/config"
+                contrast_config = {
+                    "name": "Contrast",
+                    "has_entity_name": True,
+                    "object_id": f"{prefix}_contrast",
+                    "unique_id": f"{dev_id}_contrast",
+                    "device": device_info,
+                    "icon": "mdi:contrast-circle",
+                    "min": 0,
+                    "max": 100,
+                    "step": 1,
+                    "state_topic": f"ha_openrgb/ddc/{dev_id}/contrast/state",
+                    "command_topic": f"ha_openrgb/ddc/{dev_id}/contrast/set",
+                }
+                self.client.publish(contrast_disc_topic, json.dumps(contrast_config), retain=True)
+
+            # 4. Speaker Volume Number Entity
+            # e.g., number.asus_va34vcpsr_monitor_speaker_volume
             if mon["has_audio"]:
-                vol_disc_topic = f"homeassistant/number/ddc_{sn}_volume/config"
+                vol_disc_topic = f"homeassistant/number/{dev_id}_volume/config"
                 vol_config = {
                     "name": "Speaker Volume",
-                    "unique_id": f"ddc_{sn}_volume",
+                    "has_entity_name": True,
+                    "object_id": f"{prefix}_speaker_volume",
+                    "unique_id": f"{dev_id}_volume",
                     "device": device_info,
                     "icon": "mdi:volume-high",
                     "min": 0,
                     "max": 100,
                     "step": 1,
-                    "state_topic": f"ha_openrgb/ddc/{sn}/volume/state",
-                    "command_topic": f"ha_openrgb/ddc/{sn}/volume/set",
+                    "state_topic": f"ha_openrgb/ddc/{dev_id}/volume/state",
+                    "command_topic": f"ha_openrgb/ddc/{dev_id}/volume/set",
                 }
                 self.client.publish(vol_disc_topic, json.dumps(vol_config), retain=True)
 
+            # 5. Audio Mute Switch Entity
+            # e.g., switch.asus_va34vcpsr_monitor_audio_mute
+            if mon["has_mute"]:
+                mute_disc_topic = f"homeassistant/switch/{dev_id}_mute/config"
+                mute_config = {
+                    "name": "Audio Mute",
+                    "has_entity_name": True,
+                    "object_id": f"{prefix}_audio_mute",
+                    "unique_id": f"{dev_id}_mute",
+                    "device": device_info,
+                    "icon": "mdi:volume-mute",
+                    "payload_on": "ON",
+                    "payload_off": "OFF",
+                    "state_on": "ON",
+                    "state_off": "OFF",
+                    "state_topic": f"ha_openrgb/ddc/{dev_id}/mute/state",
+                    "command_topic": f"ha_openrgb/ddc/{dev_id}/mute/set",
+                }
+                self.client.publish(mute_disc_topic, json.dumps(mute_config), retain=True)
+
+            # 6. Quick Switch Buttons for Each Input
+            # e.g., button.asus_va34vcpsr_monitor_switch_to_hdmi_1
             for opt in mon["input_options"]:
-                clean_opt = re.sub(r"[^a-zA-Z0-9_]", "_", opt.lower())
-                btn_disc_topic = f"homeassistant/button/ddc_{sn}_{clean_opt}/config"
+                clean_opt = clean_identifier(opt)
+                btn_disc_topic = f"homeassistant/button/{dev_id}_{clean_opt}/config"
                 btn_config = {
                     "name": f"Switch to {opt}",
-                    "unique_id": f"ddc_{sn}_btn_{clean_opt}",
+                    "has_entity_name": True,
+                    "object_id": f"{prefix}_switch_to_{clean_opt}",
+                    "unique_id": f"{dev_id}_btn_{clean_opt}",
                     "device": device_info,
                     "icon": "mdi:monitor-arrow-down",
-                    "command_topic": f"ha_openrgb/ddc/{sn}/input/set",
+                    "command_topic": f"ha_openrgb/ddc/{dev_id}/input/set",
                     "payload_press": opt,
                 }
                 self.client.publish(btn_disc_topic, json.dumps(btn_config), retain=True)
 
-            self.client.subscribe(f"ha_openrgb/ddc/{sn}/input/set")
-            self.client.subscribe(f"ha_openrgb/ddc/{sn}/brightness/set")
+            # Subscriptions
+            self.client.subscribe(f"ha_openrgb/ddc/{dev_id}/input/set")
+            self.client.subscribe(f"ha_openrgb/ddc/{dev_id}/brightness/set")
+            self.client.subscribe(f"ha_openrgb/ddc/{dev_id}/contrast/set")
             if mon["has_audio"]:
-                self.client.subscribe(f"ha_openrgb/ddc/{sn}/volume/set")
+                self.client.subscribe(f"ha_openrgb/ddc/{dev_id}/volume/set")
+            if mon["has_mute"]:
+                self.client.subscribe(f"ha_openrgb/ddc/{dev_id}/mute/set")
 
     def publish_states(self, target_mon=None):
         if not self.connected or not self.client:
@@ -383,13 +514,17 @@ class MQTTClientManager:
         for mon in monitors:
             if not mon:
                 continue
-            sn = mon["serial"]
+            dev_id = mon["device_id"]
             if mon.get("current_input_name"):
-                self.client.publish(f"ha_openrgb/ddc/{sn}/input/state", mon["current_input_name"], retain=True)
+                self.client.publish(f"ha_openrgb/ddc/{dev_id}/input/state", mon["current_input_name"], retain=True)
             if mon.get("brightness") is not None:
-                self.client.publish(f"ha_openrgb/ddc/{sn}/brightness/state", str(mon["brightness"]), retain=True)
+                self.client.publish(f"ha_openrgb/ddc/{dev_id}/brightness/state", str(mon["brightness"]), retain=True)
+            if mon.get("contrast") is not None:
+                self.client.publish(f"ha_openrgb/ddc/{dev_id}/contrast/state", str(mon["contrast"]), retain=True)
             if mon.get("has_audio") and mon.get("volume") is not None:
-                self.client.publish(f"ha_openrgb/ddc/{sn}/volume/state", str(mon["volume"]), retain=True)
+                self.client.publish(f"ha_openrgb/ddc/{dev_id}/volume/state", str(mon["volume"]), retain=True)
+            if mon.get("has_mute") and mon.get("mute") is not None:
+                self.client.publish(f"ha_openrgb/ddc/{dev_id}/mute/state", "ON" if mon["mute"] else "OFF", retain=True)
 
 
 class DDCRequestHandler(BaseHTTPRequestHandler):
@@ -451,6 +586,27 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
                 self.send_json(400, {"error": "Invalid brightness value"})
             return
 
+        if path == "/contrast":
+            val = params.get("set", [None])[0]
+            if val is None:
+                self.send_json(400, {"error": "Missing 'set' parameter (0-100)"})
+                return
+            try:
+                ival = int(val)
+                ok, msg = manager.set_vcp(disp_id, 0x12, ival)
+                if ok:
+                    mon = next((m for m in manager.monitors if m["display"] == disp_id), None)
+                    if mon:
+                        mon["contrast"] = ival
+                    if mqtt_mgr:
+                        mqtt_mgr.publish_states(mon)
+                    self.send_json(200, {"status": "ok", "display": disp_id, "contrast": ival})
+                else:
+                    self.send_json(500, {"status": "error", "message": msg})
+            except ValueError:
+                self.send_json(400, {"error": "Invalid contrast value"})
+            return
+
         if path == "/volume":
             val = params.get("set", [None])[0]
             if val is None:
@@ -470,6 +626,40 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
                     self.send_json(500, {"status": "error", "message": msg})
             except ValueError:
                 self.send_json(400, {"error": "Invalid volume value"})
+            return
+
+        if path == "/mute":
+            val = params.get("set", [None])[0]
+            if val is None:
+                self.send_json(400, {"error": "Missing 'set' parameter (e.g. ?set=on or ?set=off)"})
+                return
+            is_on = val.strip().lower() in ("on", "1", "true")
+            ok, msg = manager.set_mute(disp_id, is_on)
+            if ok:
+                mon = next((m for m in manager.monitors if m["display"] == disp_id), None)
+                if mqtt_mgr:
+                    mqtt_mgr.publish_states(mon)
+                self.send_json(200, {"status": "ok", "display": disp_id, "mute": is_on})
+            else:
+                self.send_json(500, {"status": "error", "message": msg})
+            return
+
+        if path == "/power":
+            mode = params.get("set", ["on"])[0].strip().lower()
+            val = 1
+            if mode in ("standby", "2"):
+                val = 2
+            elif mode in ("suspend", "3"):
+                val = 3
+            elif mode in ("off", "sleep", "4"):
+                val = 4
+            elif mode in ("hard_off", "5"):
+                val = 5
+            ok, msg = manager.set_vcp(disp_id, 0xD6, val)
+            if ok:
+                self.send_json(200, {"status": "ok", "display": disp_id, "power_mode": mode})
+            else:
+                self.send_json(500, {"status": "error", "message": msg})
             return
 
         if path == "/setvcp":
@@ -518,10 +708,17 @@ def poll_loop():
                 new_bright = manager.get_vcp(disp_id, 0x10)
                 if new_bright is not None:
                     mon["brightness"] = new_bright
+                new_contrast = manager.get_vcp(disp_id, 0x12)
+                if new_contrast is not None:
+                    mon["contrast"] = new_contrast
                 if mon["has_audio"]:
                     new_vol = manager.get_vcp(disp_id, 0x62)
                     if new_vol is not None:
                         mon["volume"] = new_vol
+                if mon["has_mute"]:
+                    new_mute_val = manager.get_vcp(disp_id, 0x8D)
+                    if new_mute_val is not None:
+                        mon["mute"] = (new_mute_val == 1)
                 if mqtt_mgr:
                     mqtt_mgr.publish_states(mon)
         except Exception as e:

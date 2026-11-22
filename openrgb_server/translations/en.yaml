@@ -11,6 +11,18 @@ configuration:
   list_devices_on_start:
     name: "List OPENRGB IDs in Log on Startup"
     description: "Runs 'openrgb --list-devices' on startup so you can easily see each device's OPENRGB ID (0, 1, 2...) and LED count in the Add-on Log tab for LedFx."
+  enable_ddc:
+    name: "Enable DDC/CI Monitor Control"
+    description: "Enables hardware monitor control via DDC/CI (input switching, brightness, volume, mute, power)."
+  ddc_port:
+    name: "DDC REST API Port"
+    description: "TCP port for the embedded DDC/CI monitor HTTP REST API (Default: 6743)."
+  ddc_mqtt_discovery:
+    name: "DDC MQTT Auto-Discovery"
+    description: "Publishes native Home Assistant entities (select, number, switch, buttons) for all detected DDC monitors via MQTT."
+  ddc_poll_interval:
+    name: "DDC State Polling Interval (seconds)"
+    description: "How often to poll monitor hardware registers and synchronize states with Home Assistant (Default: 60s)."
   wiz_ips:
     name: "Philips WiZ Device IP Addresses"
     description: "List of static local IPv4 addresses for Philips WiZ Light Bars / Bulbs (e.g. 192.168.2.65). Ensure 'Allow Local Communication' is enabled in the WiZ app."
