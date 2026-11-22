@@ -1,5 +1,5 @@
 name: "OpenRGB SDK Server"
-version: "1.1.1"
+version: "1.1.2"
 slug: "openrgb_server"
 description: "Headless OpenRGB SDK Server (v1.0+) & Generic DDC/CI Monitor Control for Home Assistant OS — supports direct USB HID, WiZ, Yeelight, Kasa, and automated DDC/CI monitor input switching, brightness, speaker volume & mute control."
 url: "https://github.com/kali-777/ha-openrgb-addon"
@@ -16,27 +16,6 @@ udev: true
 uart: true
 full_access: true
 kernel_modules: false
-privileged:
-  - ALL
-devices:
-  - /dev/i2c-0
-  - /dev/i2c-1
-  - /dev/i2c-2
-  - /dev/i2c-3
-  - /dev/i2c-4
-  - /dev/i2c-5
-  - /dev/i2c-6
-  - /dev/i2c-7
-  - /dev/i2c-8
-  - /dev/i2c-9
-  - /dev/i2c-10
-  - /dev/i2c-11
-  - /dev/i2c-12
-  - /dev/i2c-13
-  - /dev/i2c-14
-  - /dev/i2c-15
-services:
-  - mqtt:want
 map:
   - type: addon_config
     read_only: false
@@ -69,7 +48,7 @@ schema:
   ddc_mqtt_discovery: "bool"
   ddc_poll_interval: "int"
   mqtt_username: "str?"
-  mqtt_password: "password?"
+  mqtt_password: "str?"
   wiz_ips:
     - "str"
   wiz_white_strategy: "list(Average|Lowest|None)"

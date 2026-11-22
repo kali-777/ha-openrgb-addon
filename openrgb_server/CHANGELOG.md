@@ -2,15 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.1.1] - 2026-11-23
+## [1.1.2] - 2026-11-23
 
 ### Fixed
-- **DDC/CI Display Detection**: Fixed parsing in `ddc_service.py` to process valid display output even when `ddcutil detect` exits with non-zero due to motherboard I2C bus scan warnings.
-- **I2C Device Passthrough**: Added `/dev/i2c-0` through `/dev/i2c-15` explicitly under `devices:` and added `privileged: ["ALL"]` in `config.yaml` to ensure the container has direct hardware bus access to connected monitors.
-- **MQTT Authentication (Mosquitto `code 5` Fix)**:
-  - Added support for authenticated MQTT connections (`mqtt_username` and `mqtt_password` options).
-  - Added `services: ["mqtt:want"]` to automatically inherit credentials from the Supervisor MQTT service.
-  - Upgraded `paho-mqtt` client initialization to Callback API v2 to eliminate deprecation warnings.
+- **Repository Schema Validation & Logo Recovery**: Fixed `config.yaml` schema compliance with Home Assistant Supervisor (`SCHEMA_ADDON_CONFIG`) by removing redundant `devices` list under `full_access: true`, resolving `password?` schema type, and eliminating detached add-on status so the official OpenRGB logo, documentation, and update indicators restore properly in the HA UI.
+- **DDC/CI Display Detection**: Robust stdout display parsing in `ddc_service.py` to process connected displays regardless of non-zero scan warning codes on motherboard I2C buses.
+- **MQTT Authentication**: Added support for authenticated connections (`mqtt_username` and `mqtt_password`), eliminating Mosquitto error `code 5`.
+- **paho-mqtt 2.x Upgrade**: Eliminated Callback API v1 deprecation warnings.
 
 ---
 
@@ -41,10 +39,6 @@ All notable changes to this project will be documented in this file.
     - `GET /power?set=<on|standby>`: Control display panel power.
     - `GET /setvcp?vcp=0xXX&val=0xYY`: Raw low-level VCP register access.
   - Bundled `ddcutil` and `python3-paho-mqtt` in add-on container.
-
-### Changed
-- Refactored entity discovery naming to adhere to strict Home Assistant vendor/model naming standards (`<vendor>_<model>_monitor_*`).
-- Upgraded container base and configuration schema to support background DDC polling and configurable REST port (`6743`).
 
 ---
 
