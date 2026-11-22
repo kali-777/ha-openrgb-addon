@@ -32,11 +32,12 @@ cleanup() {
 trap cleanup EXIT SIGINT SIGTERM
 
 echo "=================================================================="
-echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.0.4)"
+echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.1.1)"
 echo "=================================================================="
 echo "OpenRGB Version : $(openrgb --version 2>/dev/null | head -n 1 || echo 'OpenRGB 1.0+')"
 echo "Bind Address    : ${SERVER_HOST}:${SERVER_PORT}"
 echo "Config Directory: ${CONFIG_DIR}"
+echo "I2C Bus Devices : $(ls -d /dev/i2c* 2>/dev/null | tr '\n' ' ' || echo 'None detected')"
 
 # Start Generic DDC/CI Monitor Control Service if enabled
 if [ "${ENABLE_DDC}" = "true" ]; then

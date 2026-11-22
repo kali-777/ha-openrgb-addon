@@ -23,6 +23,12 @@ configuration:
   ddc_poll_interval:
     name: "DDC State Polling Interval (seconds)"
     description: "How often to poll monitor hardware registers and synchronize states with Home Assistant (Default: 60s)."
+  mqtt_username:
+    name: "MQTT Username"
+    description: "Username for Home Assistant Mosquitto MQTT broker authentication (leave blank if auto-configured by Supervisor or anonymous)."
+  mqtt_password:
+    name: "MQTT Password"
+    description: "Password for Home Assistant Mosquitto MQTT broker authentication."
   wiz_ips:
     name: "Philips WiZ Device IP Addresses"
     description: "List of static local IPv4 addresses for Philips WiZ Light Bars / Bulbs (e.g. 192.168.2.65). Ensure 'Allow Local Communication' is enabled in the WiZ app."

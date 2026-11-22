@@ -5,6 +5,7 @@ Provides:
   1. REST API on port 6743 (by default) for direct input/brightness/volume/mute/power switching
   2. Home Assistant MQTT Auto-Discovery (select, number, switch, button entities)
   3. Dynamic naming standard: <vendor>_<model>_monitor_<feature> (e.g., asus_va34vcpsr_monitor_input_source)
+  4. Authentication support for Home Assistant Mosquitto broker
 Works dynamically with any monitor supported by ddcutil.
 """
 
@@ -19,12 +20,17 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 OPTIONS_FILE = "/data/options.json"
+SERVICES_FILE = "/data/services/mqtt.json"
+
 DDC_PORT = 6743
 MQTT_HOST = "127.0.0.1"
 MQTT_PORT = 1883
+MQTT_USER = None
+MQTT_PASS = None
 POLL_INTERVAL = 60
 ENABLE_MQTT = True
 
+# Load options from Home Assistant
 if os.path.exists(OPTIONS_FILE):
     try:
         with open(OPTIONS_FILE, "r") as f:
@@ -32,8 +38,27 @@ if os.path.exists(OPTIONS_FILE):
             DDC_PORT = int(opts.get("ddc_port", 6743))
             ENABLE_MQTT = bool(opts.get("ddc_mqtt_discovery", True))
             POLL_INTERVAL = int(opts.get("ddc_poll_interval", 60))
+            MQTT_USER = opts.get("mqtt_username") or None
+            MQTT_PASS = opts.get("mqtt_password") or None
     except Exception as e:
         print(f"[DDC] Error loading options.json: {e}", file=sys.stderr)
+
+# Auto-detect MQTT credentials from Supervisor service if not manually configured
+if (not MQTT_USER or not MQTT_PASS) and os.path.exists(SERVICES_FILE):
+    try:
+        with open(SERVICES_FILE, "r") as f:
+            svc = json.load(f)
+            MQTT_HOST = svc.get("host", MQTT_HOST)
+            MQTT_PORT = int(svc.get("port", MQTT_PORT))
+            MQTT_USER = svc.get("username", MQTT_USER)
+            MQTT_PASS = svc.get("password", MQTT_PASS)
+            print(f"[DDC] Detected MQTT credentials from Supervisor service: user '{MQTT_USER}'")
+    except Exception as e:
+        print(f"[DDC] Note: Could not read {SERVICES_FILE}: {e}", file=sys.stderr)
+
+# Fallback environment variables
+MQTT_USER = os.environ.get("MQTT_USER", MQTT_USER)
+MQTT_PASS = os.environ.get("MQTT_PASSWORD", MQTT_PASS)
 
 # Common 3-letter EDID manufacturer lookup table
 MFG_LOOKUP = {
@@ -127,8 +152,11 @@ class MonitorManager:
     def detect_monitors(self):
         code, out, err = run_ddcutil("detect")
         monitors = []
-        if code != 0 or not out:
-            print(f"[DDC] No monitors detected or error: {err}", file=sys.stderr)
+
+        # ddcutil detect often returns non-zero when some internal I2C buses return warnings,
+        # but out still contains valid Display blocks. Check if any Display was found!
+        if not out or "Display" not in out:
+            print(f"[DDC] No monitors detected in output (exit code {code}). Stderr: {err.strip()}", file=sys.stderr)
             return monitors
 
         blocks = re.split(r"\n(?=Display\s+\d+)", out)
@@ -212,7 +240,7 @@ class MonitorManager:
     def query_supported_inputs(self, disp_id):
         code, out, _ = run_ddcutil("--display", str(disp_id), "capabilities")
         inputs = []
-        if code == 0 and out:
+        if out:
             cap_match = re.search(r"60\(([^)]+)\)", out)
             if cap_match:
                 for token in cap_match.group(1).split():
@@ -227,7 +255,7 @@ class MonitorManager:
     def get_vcp(self, disp_id, vcp_code):
         vcp_hex = f"0x{vcp_code:02x}"
         code, out, _ = run_ddcutil("--display", str(disp_id), "getvcp", vcp_hex, "--terse")
-        if code == 0 and out:
+        if out:
             parts = out.strip().split()
             if len(parts) >= 4:
                 try:
@@ -298,14 +326,18 @@ class MQTTClientManager:
             print("[DDC] paho-mqtt not installed; skipping MQTT discovery.", file=sys.stderr)
             return
 
-        def on_connect(client, userdata, flags, rc):
-            if rc == 0:
-                print("[DDC] Connected to MQTT broker. Publishing HA Discovery...")
+        def on_connect(*args):
+            # Support both CallbackAPIVersion.VERSION2 (client, userdata, flags, rc, props)
+            # and VERSION1 (client, userdata, flags, rc)
+            rc = args[3] if len(args) >= 4 else args[-1]
+            code = rc.value if hasattr(rc, "value") else (int(rc) if isinstance(rc, int) else 0)
+            if code == 0:
+                print("[DDC] Connected successfully to MQTT broker. Publishing HA Discovery...")
                 self.connected = True
                 self.publish_discovery()
                 self.publish_states()
             else:
-                print(f"[DDC] MQTT connection failed with code {rc}", file=sys.stderr)
+                print(f"[DDC] MQTT connection failed with code {code} ({rc})", file=sys.stderr)
 
         def on_message(client, userdata, msg):
             try:
@@ -363,7 +395,18 @@ class MQTTClientManager:
                 print(f"[DDC] Error processing MQTT message: {e}", file=sys.stderr)
 
         try:
-            self.client = mqtt.Client(client_id="ha_openrgb_ddc_service")
+            # Instantiate client avoiding Callback API version 1 deprecation warning
+            try:
+                self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="ha_openrgb_ddc_service")
+            except (AttributeError, TypeError):
+                self.client = mqtt.Client(client_id="ha_openrgb_ddc_service")
+
+            if MQTT_USER and MQTT_PASS:
+                print(f"[DDC] Using authenticated MQTT login for user '{MQTT_USER}'")
+                self.client.username_pw_set(MQTT_USER, MQTT_PASS)
+            else:
+                print("[DDC] Connecting to MQTT broker anonymously (no credentials configured)")
+
             self.client.on_connect = on_connect
             self.client.on_message = on_message
             self.client.connect_async(MQTT_HOST, MQTT_PORT, 60)

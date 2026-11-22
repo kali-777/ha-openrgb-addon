@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2026-11-23
+
+### Fixed
+- **DDC/CI Display Detection**: Fixed parsing in `ddc_service.py` to process valid display output even when `ddcutil detect` exits with non-zero due to motherboard I2C bus scan warnings.
+- **I2C Device Passthrough**: Added `/dev/i2c-0` through `/dev/i2c-15` explicitly under `devices:` and added `privileged: ["ALL"]` in `config.yaml` to ensure the container has direct hardware bus access to connected monitors.
+- **MQTT Authentication (Mosquitto `code 5` Fix)**:
+  - Added support for authenticated MQTT connections (`mqtt_username` and `mqtt_password` options).
+  - Added `services: ["mqtt:want"]` to automatically inherit credentials from the Supervisor MQTT service.
+  - Upgraded `paho-mqtt` client initialization to Callback API v2 to eliminate deprecation warnings.
+
+---
+
 ## [1.1.0] - 2026-11-23
 
 ### Added
