@@ -120,6 +120,8 @@ action:
 | `ddc_port` | `6743` | TCP port for the DDC REST API. |
 | `ddc_mqtt_discovery` | `true` | Enables Home Assistant MQTT auto-discovery for all detected monitors. |
 | `ddc_poll_interval` | `60` | Polling interval in seconds to sync monitor state changes to HA. |
+| `mqtt_username` | `""` | Username for Mosquitto broker (optional; automatically fetched from Supervisor API). |
+| `mqtt_password` | `""` | Password for Mosquitto broker (optional; automatically fetched from Supervisor API). |
 | `server_port` | `6742` | TCP port for the OpenRGB SDK Server (used by LedFx and HA OpenRGB). |
 | `server_host` | `0.0.0.0` | Listen address for OpenRGB SDK server. |
 | `list_devices_on_start` | `true` | Prints all detected OpenRGB IDs in the add-on log on startup. |

@@ -5,7 +5,7 @@ Provides:
   1. REST API on port 6743 (by default) for direct input/brightness/volume/mute/power switching
   2. Home Assistant MQTT Auto-Discovery (select, number, switch, button entities)
   3. Dynamic naming standard: <vendor>_<model>_monitor_<feature> (e.g., asus_va34vcpsr_monitor_input_source)
-  4. Authentication support for Home Assistant Mosquitto broker
+  4. Automatic Supervisor Mosquitto authentication & manual credential support
 Works dynamically with any monitor supported by ddcutil.
 """
 
@@ -16,6 +16,7 @@ import time
 import re
 import subprocess
 import threading
+import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -25,12 +26,10 @@ SERVICES_FILE = "/data/services/mqtt.json"
 DDC_PORT = 6743
 MQTT_HOST = "127.0.0.1"
 MQTT_PORT = 1883
-MQTT_USER = None
-MQTT_PASS = None
 POLL_INTERVAL = 60
 ENABLE_MQTT = True
 
-# Load options from Home Assistant
+# Load options from Home Assistant options.json
 if os.path.exists(OPTIONS_FILE):
     try:
         with open(OPTIONS_FILE, "r") as f:
@@ -38,27 +37,82 @@ if os.path.exists(OPTIONS_FILE):
             DDC_PORT = int(opts.get("ddc_port", 6743))
             ENABLE_MQTT = bool(opts.get("ddc_mqtt_discovery", True))
             POLL_INTERVAL = int(opts.get("ddc_poll_interval", 60))
-            MQTT_USER = opts.get("mqtt_username") or None
-            MQTT_PASS = opts.get("mqtt_password") or None
     except Exception as e:
         print(f"[DDC] Error loading options.json: {e}", file=sys.stderr)
 
-# Auto-detect MQTT credentials from Supervisor service if not manually configured
-if (not MQTT_USER or not MQTT_PASS) and os.path.exists(SERVICES_FILE):
-    try:
-        with open(SERVICES_FILE, "r") as f:
-            svc = json.load(f)
-            MQTT_HOST = svc.get("host", MQTT_HOST)
-            MQTT_PORT = int(svc.get("port", MQTT_PORT))
-            MQTT_USER = svc.get("username", MQTT_USER)
-            MQTT_PASS = svc.get("password", MQTT_PASS)
-            print(f"[DDC] Detected MQTT credentials from Supervisor service: user '{MQTT_USER}'")
-    except Exception as e:
-        print(f"[DDC] Note: Could not read {SERVICES_FILE}: {e}", file=sys.stderr)
 
-# Fallback environment variables
-MQTT_USER = os.environ.get("MQTT_USER", MQTT_USER)
-MQTT_PASS = os.environ.get("MQTT_PASSWORD", MQTT_PASS)
+def resolve_mqtt_credentials():
+    """
+    Resolves MQTT credentials with priority:
+    1. User manual options (mqtt_username / mqtt_password in options.json)
+    2. Supervisor Service API (http://supervisor/services/mqtt via SUPERVISOR_TOKEN)
+    3. Injected service file (/data/services/mqtt.json)
+    4. Environment variables
+    """
+    host = MQTT_HOST
+    port = MQTT_PORT
+    user = None
+    password = None
+
+    # 1. Manual user configuration
+    if os.path.exists(OPTIONS_FILE):
+        try:
+            with open(OPTIONS_FILE, "r") as f:
+                opts = json.load(f)
+                u = opts.get("mqtt_username", "").strip()
+                p = opts.get("mqtt_password", "").strip()
+                if u and p:
+                    print(f"[DDC] Using manually configured MQTT credentials for user '{u}'")
+                    return host, port, u, p
+        except Exception:
+            pass
+
+    # 2. Supervisor API (automatic when hassio_api: true)
+    sup_token = os.environ.get("SUPERVISOR_TOKEN")
+    if sup_token:
+        try:
+            req = urllib.request.Request(
+                "http://supervisor/services/mqtt",
+                headers={"Authorization": f"Bearer {sup_token}"}
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                    svc_data = payload.get("data", {})
+                    host = svc_data.get("host", host)
+                    port = int(svc_data.get("port", port))
+                    user = svc_data.get("username")
+                    password = svc_data.get("password")
+                    if user and password:
+                        print(f"[DDC] Auto-discovered Mosquitto credentials from Supervisor API: user '{user}'")
+                        return host, port, user, password
+        except Exception as e:
+            print(f"[DDC] Note: Supervisor MQTT API not available or no broker service linked: {e}", file=sys.stderr)
+
+    # 3. /data/services/mqtt.json
+    if os.path.exists(SERVICES_FILE):
+        try:
+            with open(SERVICES_FILE, "r") as f:
+                svc = json.load(f)
+                host = svc.get("host", host)
+                port = int(svc.get("port", port))
+                user = svc.get("username")
+                password = svc.get("password")
+                if user and password:
+                    print(f"[DDC] Read MQTT credentials from {SERVICES_FILE}: user '{user}'")
+                    return host, port, user, password
+        except Exception:
+            pass
+
+    # 4. Fallback environment variables
+    env_u = os.environ.get("MQTT_USER")
+    env_p = os.environ.get("MQTT_PASSWORD")
+    if env_u and env_p:
+        return host, port, env_u, env_p
+
+    print("[DDC] No MQTT credentials found; will attempt connection without auth.", file=sys.stderr)
+    return host, port, None, None
+
 
 # Common 3-letter EDID manufacturer lookup table
 MFG_LOOKUP = {
@@ -153,8 +207,6 @@ class MonitorManager:
         code, out, err = run_ddcutil("detect")
         monitors = []
 
-        # ddcutil detect often returns non-zero when some internal I2C buses return warnings,
-        # but out still contains valid Display blocks. Check if any Display was found!
         if not out or "Display" not in out:
             print(f"[DDC] No monitors detected in output (exit code {code}). Stderr: {err.strip()}", file=sys.stderr)
             return monitors
@@ -187,7 +239,6 @@ class MonitorManager:
 
             mfg_clean = clean_identifier(mfg)
             model_clean = clean_identifier(model)
-            # Standard prefix requested: <vendor>_<model>_monitor
             entity_prefix = f"{mfg_clean}_{model_clean}_monitor"
             device_id = f"ddc_{mfg_clean}_{model_clean}_{clean_sn.lower()}"
 
@@ -326,9 +377,9 @@ class MQTTClientManager:
             print("[DDC] paho-mqtt not installed; skipping MQTT discovery.", file=sys.stderr)
             return
 
+        host, port, user, password = resolve_mqtt_credentials()
+
         def on_connect(*args):
-            # Support both CallbackAPIVersion.VERSION2 (client, userdata, flags, rc, props)
-            # and VERSION1 (client, userdata, flags, rc)
             rc = args[3] if len(args) >= 4 else args[-1]
             code = rc.value if hasattr(rc, "value") else (int(rc) if isinstance(rc, int) else 0)
             if code == 0:
@@ -395,21 +446,20 @@ class MQTTClientManager:
                 print(f"[DDC] Error processing MQTT message: {e}", file=sys.stderr)
 
         try:
-            # Instantiate client avoiding Callback API version 1 deprecation warning
             try:
                 self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="ha_openrgb_ddc_service")
             except (AttributeError, TypeError):
                 self.client = mqtt.Client(client_id="ha_openrgb_ddc_service")
 
-            if MQTT_USER and MQTT_PASS:
-                print(f"[DDC] Using authenticated MQTT login for user '{MQTT_USER}'")
-                self.client.username_pw_set(MQTT_USER, MQTT_PASS)
+            if user and password:
+                print(f"[DDC] Authenticating with MQTT broker using username '{user}'")
+                self.client.username_pw_set(user, password)
             else:
-                print("[DDC] Connecting to MQTT broker anonymously (no credentials configured)")
+                print("[DDC] Connecting to MQTT broker without authentication")
 
             self.client.on_connect = on_connect
             self.client.on_message = on_message
-            self.client.connect_async(MQTT_HOST, MQTT_PORT, 60)
+            self.client.connect_async(host, port, 60)
             self.client.loop_start()
         except Exception as e:
             print(f"[DDC] Could not connect to MQTT broker: {e}", file=sys.stderr)
@@ -432,7 +482,6 @@ class MQTTClientManager:
             }
 
             # 1. Input Source Select Entity
-            # e.g., select.asus_va34vcpsr_monitor_input_source
             input_disc_topic = f"homeassistant/select/{dev_id}_input/config"
             input_config = {
                 "name": "Input Source",
@@ -448,7 +497,6 @@ class MQTTClientManager:
             self.client.publish(input_disc_topic, json.dumps(input_config), retain=True)
 
             # 2. Brightness Number Entity
-            # e.g., number.asus_va34vcpsr_monitor_brightness
             bright_disc_topic = f"homeassistant/number/{dev_id}_brightness/config"
             bright_config = {
                 "name": "Brightness",
@@ -466,7 +514,6 @@ class MQTTClientManager:
             self.client.publish(bright_disc_topic, json.dumps(bright_config), retain=True)
 
             # 3. Contrast Number Entity
-            # e.g., number.asus_va34vcpsr_monitor_contrast
             if mon.get("contrast") is not None:
                 contrast_disc_topic = f"homeassistant/number/{dev_id}_contrast/config"
                 contrast_config = {
@@ -485,7 +532,6 @@ class MQTTClientManager:
                 self.client.publish(contrast_disc_topic, json.dumps(contrast_config), retain=True)
 
             # 4. Speaker Volume Number Entity
-            # e.g., number.asus_va34vcpsr_monitor_speaker_volume
             if mon["has_audio"]:
                 vol_disc_topic = f"homeassistant/number/{dev_id}_volume/config"
                 vol_config = {
@@ -504,7 +550,6 @@ class MQTTClientManager:
                 self.client.publish(vol_disc_topic, json.dumps(vol_config), retain=True)
 
             # 5. Audio Mute Switch Entity
-            # e.g., switch.asus_va34vcpsr_monitor_audio_mute
             if mon["has_mute"]:
                 mute_disc_topic = f"homeassistant/switch/{dev_id}_mute/config"
                 mute_config = {
@@ -524,7 +569,6 @@ class MQTTClientManager:
                 self.client.publish(mute_disc_topic, json.dumps(mute_config), retain=True)
 
             # 6. Quick Switch Buttons for Each Input
-            # e.g., button.asus_va34vcpsr_monitor_switch_to_hdmi_1
             for opt in mon["input_options"]:
                 clean_opt = clean_identifier(opt)
                 btn_disc_topic = f"homeassistant/button/{dev_id}_{clean_opt}/config"

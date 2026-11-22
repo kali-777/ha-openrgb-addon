@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.3] - 2026-11-23
+
+### Fixed
+- **I2C Device Permissions & AppArmor Bypass**: Disabled default container AppArmor confinement (`apparmor: false`) and granted explicit Linux capabilities `SYS_ADMIN` and `SYS_RAWIO` in `config.yaml`. Resolves `ddcutil` error `EPERM(1): Operation not permitted` on `/dev/i2c-11` (and all motherboard I2C buses), allowing unhindered communication with ASUS VA34VCPSR and other DDC/CI monitors.
+- **Automated Mosquitto MQTT Discovery via Supervisor API**: Enabled `hassio_api: true` and implemented direct token authentication against `http://supervisor/services/mqtt`. Automatically discovers and connects to the Mosquitto broker with zero manual credential entry required, eliminating MQTT code 135 (Not authorized).
+- **Manual Credentials Fallback**: Full support for manual `mqtt_username` and `mqtt_password` in options for external brokers or custom users.
+- **Repository Metadata & Branding Restoration**: Fixed add-on catalog sync to ensure the OpenRGB logo, documentation tab, changelog, and update badges persist without supervisor detachment.
+
+---
+
 ## [1.1.2] - 2026-11-23
 
 ### Fixed
@@ -67,8 +77,3 @@ All notable changes to this project will be documented in this file.
 - Multi-architecture build support (`amd64`, `aarch64`, `armv7`).
 
 ---
-
-## [1.0.0] - 2026-11-19
-
-### Initial Release
-- Headless OpenRGB SDK server daemon for Home Assistant OS and LedFx.
