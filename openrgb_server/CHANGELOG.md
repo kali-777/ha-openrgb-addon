@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.6] - 2026-11-23
+
+### Added
+- **Offline Network Device Safeguard & Fast Pre-Flight Reachability Probes**:
+  - Implemented high-performance concurrent ICMP/TCP reachability probes in `run.sh` for all configured smart light IPs (`wiz_ips`, `yeelight_ips`, `kasa_ips`).
+  - Automatically identifies and safely excludes offline or unreachable devices (such as powered-off wall switches or IPs added for later) before passing configurations into `OpenRGB.json`.
+  - **Eliminates Detection Deadlock:** Prevents OpenRGB's `DetectionManager` from hanging for 60 seconds on dead sockets (`Gave up waiting for detection after 60000 ms`), ensuring USB hardware (Razer keyboards, HyperX microphones) and online smart lights are detected instantaneously with 100% reliability every single startup.
+
+---
+
 ## [1.1.5] - 2026-11-23
 
 ### Added
