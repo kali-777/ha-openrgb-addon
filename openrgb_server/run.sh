@@ -31,7 +31,7 @@ cleanup() {
 trap cleanup EXIT SIGINT SIGTERM
 
 echo "=================================================================="
-echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.1.10)"
+echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.2.0)"
 echo "=================================================================="
 echo "OpenRGB Version : $(openrgb --version 2>/dev/null | head -n 1 || echo 'OpenRGB 1.0+')"
 echo "Bind Address    : ${SERVER_HOST}:${SERVER_PORT}"
@@ -74,7 +74,7 @@ wiz_raw = [ip.strip() for ip in opts.get("wiz_ips", []) if ip and ip.strip()]
 yeelight_raw = [ip.strip() for ip in opts.get("yeelight_ips", []) if ip and ip.strip()]
 kasa_raw = [ip.strip() for ip in opts.get("kasa_ips", []) if ip and ip.strip()]
 
-MODEL_NAMES = {
+YEELIGHT_MODEL_NAMES = {
     "stripe": "Yeelight Light Strip Plus",
     "color": "Mi LED Smart Bulb Color",
     "color3": "Mi LED Smart Bulb Color",
@@ -82,6 +82,23 @@ MODEL_NAMES = {
     "bslamp1": "Mi Bedside Lamp 1",
     "bslamp2": "Mi Bedside Lamp 2",
     "ceiling1": "Mi Ceiling Light",
+}
+
+WIZ_MODEL_NAMES = {
+    "DMORGB": "Philips WiZ Light Bar (RGBW)",
+    "DHRGB": "Philips WiZ Squire Lamp (RGBWW Dual-Head)",
+    "SHRGB": "Philips WiZ Color Bulb (RGBW)",
+    "SHRGB1C": "Philips WiZ Color Bulb (RGBW)",
+    "SHRGB2C": "Philips WiZ Color Bulb (RGBW)",
+    "SHTW": "Philips WiZ Tunable White Bulb",
+    "SHTW1C": "Philips WiZ Tunable White Bulb",
+    "SHTW2C": "Philips WiZ Tunable White Bulb",
+    "SHDW": "Philips WiZ Dimmable White Bulb",
+    "SOCKET": "Philips WiZ Smart Plug",
+    "PLUG": "Philips WiZ Smart Plug",
+    "HERA": "Philips WiZ Hero Lamp",
+    "POLE": "Philips WiZ Pole Floor Light",
+    "STRIP": "Philips WiZ Lightstrip (RGB)",
 }
 
 def ping_check(ip, count=5, timeout=4):
@@ -92,34 +109,79 @@ def ping_check(ip, count=5, timeout=4):
         return False
 
 def probe_wiz(ip):
-    # 1. Multi-attempt UDP getPilot query (port 38899) with 3.0s timeout to tolerate 2.4GHz Wi-Fi jitter
+    # 1. Multi-attempt UDP query (port 38899) with model & telemetry discovery
     for attempt in range(3):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.settimeout(3.0)
-            s.sendto(b'{"method":"getPilot","params":{}}', (ip, 38899))
-            data, _ = s.recvfrom(1024)
+            # Query getSystemConfig for hardware module and firmware version
+            s.sendto(b'{"method":"getSystemConfig","params":{}}', (ip, 38899))
+            sys_data, _ = s.recvfrom(2048)
+            
+            # Query getPilot for signal strength and current state
+            rssi = None
+            try:
+                s.sendto(b'{"method":"getPilot","params":{}}', (ip, 38899))
+                pilot_data, _ = s.recvfrom(1024)
+                if pilot_data:
+                    p_res = json.loads(pilot_data.decode("utf-8")).get("result", {})
+                    rssi = p_res.get("rssi")
+            except Exception:
+                pass
             s.close()
-            if data:
-                extra = "WiZ Connected"
-                try:
-                    parsed = json.loads(data.decode("utf-8"))
-                    res = parsed.get("result", {})
-                    rssi = res.get("rssi")
-                    mac = res.get("mac")
-                    if rssi is not None and mac is not None:
-                        extra = f"WiZ Connected (RSSI: {rssi} dBm, MAC: {mac})"
-                    elif rssi is not None:
-                        extra = f"WiZ Connected (RSSI: {rssi} dBm)"
-                except Exception:
-                    pass
+
+            if sys_data:
+                parsed = json.loads(sys_data.decode("utf-8"))
+                res = parsed.get("result", {})
+                mod_name = res.get("moduleName", "")
+                fw = res.get("fwVersion", "")
+                mac = res.get("mac", "")
+                
+                # Parse model identifier from moduleName (e.g. ESP25_DMORGB_31 -> DMORGB)
+                raw_model = mod_name
+                parts = mod_name.split("_")
+                if len(parts) >= 2:
+                    raw_model = parts[1]
+                elif len(parts) == 1 and parts[0]:
+                    raw_model = parts[0]
+                
+                friendly_model = WIZ_MODEL_NAMES.get(raw_model.upper(), raw_model if raw_model else "Philips WiZ")
+                info_parts = [friendly_model]
+                if raw_model and raw_model != friendly_model:
+                    info_parts.append(f"model: {raw_model}")
+                if fw:
+                    info_parts.append(f"FW: {fw}")
+                if rssi is not None:
+                    info_parts.append(f"RSSI: {rssi} dBm")
+                if mac:
+                    info_parts.append(f"MAC: {mac}")
+                
+                extra = f"{info_parts[0]} ({', '.join(info_parts[1:])})" if len(info_parts) > 1 else info_parts[0]
                 return (ip, True, extra)
         except Exception:
             pass
-    # 2. Multi-packet ICMP ping fallback (5 packets, 4s timeout)
+
+    # 2. Fallback to getPilot only if getSystemConfig was missed
+    for attempt in range(2):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(3.0)
+            s.sendto(b'{"method":"getPilot","params":{}}', (ip, 38899))
+            pilot_data, _ = s.recvfrom(1024)
+            s.close()
+            if pilot_data:
+                p_res = json.loads(pilot_data.decode("utf-8")).get("result", {})
+                rssi = p_res.get("rssi")
+                mac = p_res.get("mac")
+                extra = f"Philips WiZ (RSSI: {rssi} dBm, MAC: {mac})" if rssi is not None else "Philips WiZ"
+                return (ip, True, extra)
+        except Exception:
+            pass
+
+    # 3. Multi-packet ICMP ping fallback (5 packets, 4s timeout)
     if ping_check(ip, count=5, timeout=4):
-        return (ip, True, "Ping responsive")
-    return (ip, False, "Host unreachable / offline (3x UDP & 5x ICMP timed out)")
+        return (ip, True, "Philips WiZ (Ping responsive)")
+    return (ip, False, "Host unreachable / offline (UDP & ICMP timed out)")
 
 def probe_yeelight(ip):
     # 1. Test TCP connect to port 55443 (3.5s timeout) and discover hardware model
@@ -134,7 +196,7 @@ def probe_yeelight(ip):
             resp = json.loads(s.recv(1024).decode("utf-8"))
             if "result" in resp and len(resp["result"]) >= 2:
                 d_name, d_model = resp["result"][0], resp["result"][1]
-                friendly = MODEL_NAMES.get(d_model, d_model)
+                friendly = YEELIGHT_MODEL_NAMES.get(d_model, d_model)
                 model_info = f"{friendly} (model: {d_model})"
                 if d_name:
                     model_info = f"{d_name} - {model_info}"
