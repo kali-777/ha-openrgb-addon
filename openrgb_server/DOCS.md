@@ -5,7 +5,20 @@ This Home Assistant OS add-on combines two powerful hardware control engines int
 1. **Headless OpenRGB SDK Server (`v1.0+`)**: Direct USB HID peripheral RGB control (HyperX DuoCast, Razer, etc.) and Wi-Fi smart light bridging (Philips WiZ, Xiaomi Yeelight, TP-Link Kasa) for LedFx and Home Assistant.
 2. **Generic DDC/CI Hardware Monitor Controller**: Direct I2C/DDC bus control of connected computer monitors via `ddcutil`, enabling input switching (HDMI, DisplayPort, USB-C), hardware speaker volume, mute, brightness, and power management without needing custom OS display drivers or Docker sidecars.
 
----\n## Hardware Monitor Control (DDC/CI)
+---
+
+## Prerequisites: Static / Fixed IP Reservations for Smart Lights
+
+> [!IMPORTANT]
+> **Static / Fixed IP DHCP Reservations Required:**
+> OpenRGB connects directly to Wi-Fi network smart lights over raw TCP/UDP sockets by IP address.
+> - **Assign Fixed IPs:** You **must** configure static DHCP IP reservations in your Wi-Fi router or gateway (e.g., TP-Link Omada, ER605, UniFi, ASUS, etc.) for each smart light (`wiz_ips`, `yeelight_ips`, `kasa_ips`). If a light gets a new dynamic IP after a router reboot, OpenRGB will lose connection to it.
+> - **Xiaomi Yeelight LAN Control:** For Yeelight bulbs and light strips, open the **Yeelight App** (or Xiaomi Home), go to device settings, and ensure **LAN Control (Local Area Network Control)** is turned **ON**. This opens TCP port `55443` required for high-speed streaming music mode.
+> - **Offline Device Safeguard (v1.1.6+):** The add-on includes an automated concurrent pre-flight reachability probe. Any smart light that is temporarily switched off at the wall or offline is safely skipped during startup, preventing OpenRGB from freezing on dead sockets (`DetectionManager` 60s timeout) and ensuring USB peripherals always initialize instantly.
+
+---
+
+## Hardware Monitor Control (DDC/CI)
 
 ### Key Capabilities
 - **Input Source Switching (`VCP 0x60`)**: Switch between work laptops, gaming PCs, and server consoles instantly via Home Assistant dashboard buttons, automations, or physical Stream Dock dials.
@@ -28,7 +41,9 @@ When `ddc_mqtt_discovery: true` (default), the add-on automatically detects all 
 | `button` | `button.asus_va34vcpsr_monitor_switch_to_usb_c` | One-click button to switch directly to USB-C |
 | `button` | `button.asus_va34vcpsr_monitor_switch_to_displayport_1` | One-click button to switch directly to DisplayPort-1 |
 
----\n## Embedded REST API Reference (Port 6743)
+---
+
+## Embedded REST API Reference (Port 6743)
 
 The add-on runs an embedded HTTP REST server on port `6743` (configurable) for direct local network control:
 
@@ -65,7 +80,9 @@ The add-on runs an embedded HTTP REST server on port `6743` (configurable) for d
 - **`GET /setvcp?vcp=0xXX&val=0xYY&display=1`**:
   Sends a raw VCP feature code and value directly to the monitor.
 
----\n## Home Assistant Automation Examples
+---
+
+## Home Assistant Automation Examples
 
 ### 1. Switch to Work Laptop (USB-C) on Workday Morning
 ```yaml
@@ -108,7 +125,9 @@ action:
       option: "HDMI-1"
 ```
 
----\n## Configuration Options
+---
+
+## Configuration Options
 
 | Option | Default | Description |
 | :--- | :--- | :--- |
@@ -128,11 +147,28 @@ action:
 | `kasa_ips` | `[]` | List of TP-Link Kasa smart light IP addresses. |
 | `extra_args` | `""` | Additional CLI flags passed to `openrgb`. |
 
----\n## OpenRGB & LedFx Setup
+---
 
-1. Start this add-on and check the **Log** tab to see your OpenRGB device indices (e.g., `0: HyperX DuoCast`, `1: Philips WiZ`).
-2. Open **LedFx** $\rightarrow$ **Add Device** $\rightarrow$ select **`openrgb`**:
-   - Host: `127.0.0.1` (or HAOS LAN IP)
-   - Port: `6742`
-   - OpenRGB ID: matching device index from log.
-3. For Home Assistant native entities, go to **Settings $\rightarrow$ Devices & Services $\rightarrow$ Add Integration $\rightarrow$ OpenRGB** and enter Host `127.0.0.1`, Port `6742`.
+## OpenRGB & LedFx Audio Reactive Setup
+
+### 1. Install the LedFx Add-on in Home Assistant
+LedFx provides real-time music visualization and audio synchronization across RGB hardware and network lights:
+1. In Home Assistant, navigate to **Settings → Add-ons → Add-on Store**.
+2. Click the three dots (**⋮**) in the top right corner and select **Repositories**.
+3. Add the official LedFx repository:
+   ```text
+   https://github.com/adamoberley/ha-addons
+   ```
+4. Find **LedFx** in the Add-on Store, click **Install**, and start the add-on.
+
+### 2. Connect LedFx to OpenRGB SDK Server
+1. Check this add-on's **Log** tab on startup to see your detected OpenRGB device IDs (e.g., `0: Razer Ornata V3`, `1: HyperX DuoCast`, `2: Philips Wiz`).
+2. Open the **LedFx Web UI** → **Devices** → **Add Device**.
+3. Select **`openrgb`** from the device type dropdown:
+   - **Host:** `127.0.0.1` (or your HAOS IP `192.168.x.x` if running LedFx externally)
+   - **Port:** `6742`
+   - **OpenRGB ID:** Enter the corresponding numerical device index from the add-on startup log.
+4. Click **Save**. LedFx can now send audio-reactive RGB effects directly to your hardware and smart lights!
+
+### 3. Native Home Assistant Entities
+For native Home Assistant light entities, go to **Settings → Devices & Services → Add Integration → OpenRGB** and enter Host `127.0.0.1`, Port `6742`.

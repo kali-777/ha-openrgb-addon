@@ -1,4 +1,4 @@
-# Home Assistant Add-on: OpenRGB SDK Server & DDC/CI Monitor Control (`v1.1.0`)
+# Home Assistant Add-on: OpenRGB SDK Server & DDC/CI Monitor Control (`v1.1.6`)
 
 [![Open your Home Assistant instance and show the add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fkali-777%2Fha-openrgb-addon)
 
@@ -10,6 +10,41 @@ Designed to provide two essential capabilities in a single unified daemon:
 
 ---
 
+## Prerequisites: Static / Fixed IP Reservations for Smart Lights
+
+> [!IMPORTANT]
+> **Static / Fixed IP DHCP Reservations Required:**
+> OpenRGB connects directly to Wi-Fi network smart lights over raw TCP/UDP sockets by IP address.
+> - **Assign Fixed IPs:** You **must** configure static DHCP IP reservations in your Wi-Fi router or gateway (e.g., TP-Link Omada, ER605, UniFi, ASUS, etc.) for each smart light (`wiz_ips`, `yeelight_ips`, `kasa_ips`). If a light gets a new dynamic IP after a router reboot, OpenRGB will lose connection to it.
+> - **Xiaomi Yeelight LAN Control:** For Yeelight bulbs and light strips, open the **Yeelight App** (or Xiaomi Home), go to device settings, and ensure **LAN Control (Local Area Network Control)** is turned **ON**. This opens TCP port `55443` required for high-speed streaming music mode.
+> - **Offline Device Safeguard (v1.1.6+):** The add-on includes an automated concurrent pre-flight reachability probe. Any smart light that is temporarily switched off at the wall or offline is safely skipped during startup, preventing OpenRGB from freezing on dead sockets (`DetectionManager` 60s timeout) and ensuring USB peripherals always initialize instantly.
+
+---
+
+## Audio-Reactive Sync with LedFx Add-on
+
+To sync real-time audio effects and music visualization with your OpenRGB devices and smart lights, install the **LedFx Add-on** for Home Assistant:
+
+1. **Add LedFx Repository to Home Assistant:**
+   - Go to **Settings → Add-ons → Add-on Store**.
+   - Click the **⋮ (three dots)** in the top-right corner and select **Repositories**.
+   - Add the official LedFx community repository:
+     ```text
+     https://github.com/adamoberley/ha-addons
+     ```
+   - Repository source: [adamoberley/ha-addons on GitHub](https://github.com/adamoberley/ha-addons)
+2. **Install & Start LedFx:**
+   - Find **LedFx** in the Add-on Store, click **Install**, and start the add-on.
+3. **Connect LedFx to OpenRGB:**
+   - Open the **LedFx Web UI**.
+   - Go to **Devices → Add Device** and choose **OpenRGB**.
+   - **Host:** `127.0.0.1` (or your HAOS LAN IP if running LedFx on another host).
+   - **Port:** `6742` (default OpenRGB SDK port).
+   - **OpenRGB Device ID:** Enter the numerical device index printed in this add-on's startup log (e.g. `0`, `1`, `2`).
+   - Click **Save**. LedFx will now drive audio-reactive RGB effects through your hardware and smart lights!
+
+---
+
 ## Quick Installation
 
 1. In Home Assistant, go to **Settings → Add-ons → Add-on Store**.
@@ -18,7 +53,7 @@ Designed to provide two essential capabilities in a single unified daemon:
    ```text
    https://github.com/kali-777/ha-openrgb-addon
    ```
-4. If already added, click **Check for updates** in the three dots menu, open **OpenRGB SDK Server**, and click **Update** to `v1.1.0`.
+4. If already added, click **Check for updates** in the three dots menu, open **OpenRGB SDK Server**, and click **Update** to `v1.1.6`.
 
 ---
 
@@ -35,6 +70,7 @@ Designed to provide two essential capabilities in a single unified daemon:
   - `button.asus_va34vcpsr_monitor_switch_to_displayport_1`
 - **Embedded REST API (`port 6743`)**:
   - `GET /displays`: JSON status of all detected displays
+  - `GET /rescan`: Immediate synchronous hardware bus rescan and hotplug discovery
   - `GET /input?to=<HDMI-1|USB-C|DisplayPort-1|work|windows|haos>`: Switch active video input
   - `GET /volume?set=<0-100>`: Set monitor hardware speaker volume
   - `GET /mute?set=<on|off>`: Toggle hardware audio mute
@@ -52,3 +88,4 @@ Designed to provide two essential capabilities in a single unified daemon:
 - **Xiaomi Yeelight IP List** (`yeelight_ips`) with fast TCP Music Mode streaming.
 - **TP-Link Kasa IP List** (`kasa_ips`).
 - **Auto-List Detected Devices on Startup** (`list_devices_on_start: true`).
+- **High-Performance Offline Safeguard:** Concurrent reachability probes skip offline lights so startup never freezes.
