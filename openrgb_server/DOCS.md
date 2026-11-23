@@ -181,5 +181,11 @@ LedFx provides real-time music visualization and audio synchronization across RG
    - **OpenRGB ID:** Enter the corresponding numerical device index from the add-on startup log.
 4. Click **Save**. LedFx can now send audio-reactive RGB effects directly to your hardware and smart lights!
 
+> [!TIP]
+> **Important: Restart LedFx When Adding or Removing Lights:**
+> LedFx caches the OpenRGB device list and its client connection. Whenever you add, remove, or change smart light IPs or USB hardware:
+> 1. Check this add-on's startup log for your updated device IDs (e.g. `0: Razer...`, `1: HyperX...`, `2: WiZ...`, `3: Yeelight...`).
+> 2. **Restart the LedFx add-on** (if newly configured lights don't appear immediately, restart LedFx a second time) so that LedFx flushes its device cache and establishes a fresh connection to OpenRGB on port 6742.
+
 ### 3. Native Home Assistant Entities
 For native Home Assistant light entities, go to **Settings → Devices & Services → Add Integration → OpenRGB** and enter Host `127.0.0.1`, Port `6742`.

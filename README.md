@@ -55,6 +55,12 @@ To sync real-time audio effects and music visualization with your OpenRGB device
    - **OpenRGB Device ID:** Enter the numerical device index printed in this add-on's startup log (e.g. `0`, `1`, `2`).
    - Click **Save**. LedFx will now drive audio-reactive RGB effects through your hardware and smart lights!
 
+> [!TIP]
+> **Important: Restart LedFx When Adding or Removing Lights:**
+> LedFx caches the OpenRGB device list and its client connection. Whenever you add, remove, or change smart light IPs or USB hardware:
+> 1. Check this add-on's startup log for your updated device IDs (e.g. `0: Razer...`, `1: HyperX...`, `2: WiZ...`, `3: Yeelight...`).
+> 2. **Restart the LedFx add-on** (if newly configured lights don't appear immediately, restart LedFx a second time) so that LedFx flushes its device cache and establishes a fresh connection to OpenRGB on port 6742.
+
 ---
 
 ## Quick Installation
