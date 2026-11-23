@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.9] - 2026-11-23
+
+### Added
+- **Automated Yeelight Hardware Model & Name Discovery**:
+  - The pre-flight probe in `run.sh` now automatically queries the Yeelight Open API (`get_prop ["name", "model"]`) across all responsive devices over TCP `55443`.
+  - Automatically identifies and logs the exact hardware model name (e.g. `stripe` -> `Yeelight Light Strip Plus`, `color` -> `Mi LED Smart Bulb Color`, `bslamp1` -> `Mi Bedside Lamp 1`) right above OpenRGB device enumeration, making it effortless to map device indices (`3`, `4`, `5`, `6`) in LedFx.
+
+### Documentation
+- Added important operational guidance in `README.md` and `DOCS.md` regarding the need to restart the LedFx add-on (up to 2x) whenever adding or removing smart lights so LedFx flushes its device cache and establishes a clean connection to the OpenRGB SDK server.
+
+---
+
 ## [1.1.8] - 2026-11-23
 
 ### Fixed

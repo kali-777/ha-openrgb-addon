@@ -31,7 +31,7 @@ cleanup() {
 trap cleanup EXIT SIGINT SIGTERM
 
 echo "=================================================================="
-echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.1.8)"
+echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.1.9)"
 echo "=================================================================="
 echo "OpenRGB Version : $(openrgb --version 2>/dev/null | head -n 1 || echo 'OpenRGB 1.0+')"
 echo "Bind Address    : ${SERVER_HOST}:${SERVER_PORT}"
@@ -53,8 +53,7 @@ if [ ! -f "${CONFIG_FILE}" ]; then
     echo "{}" > "${CONFIG_FILE}"
 fi
 
-# Pre-flight reachability probe for configured network smart lights (WiZ, Yeelight, Kasa)
-# Uses multi-packet ping and direct port checks to handle high-jitter 2.4GHz Wi-Fi and prevent 60s DetectionManager freezes
+# Pre-flight reachability probe & automated model discovery for smart lights
 echo "Checking network smart lights reachability..."
 python3 - <<'EOF' "${OPTIONS_FILE}" "${CONFIG_FILE}" "${WIZ_WHITE_STRATEGY}"
 import json
@@ -74,6 +73,16 @@ with open(opts_file, "r") as f:
 wiz_raw = [ip.strip() for ip in opts.get("wiz_ips", []) if ip and ip.strip()]
 yeelight_raw = [ip.strip() for ip in opts.get("yeelight_ips", []) if ip and ip.strip()]
 kasa_raw = [ip.strip() for ip in opts.get("kasa_ips", []) if ip and ip.strip()]
+
+MODEL_NAMES = {
+    "stripe": "Yeelight Light Strip Plus",
+    "color": "Mi LED Smart Bulb Color",
+    "color3": "Mi LED Smart Bulb Color",
+    "color4": "Mi LED Smart Bulb Color",
+    "bslamp1": "Mi Bedside Lamp 1",
+    "bslamp2": "Mi Bedside Lamp 2",
+    "ceiling1": "Mi Ceiling Light",
+}
 
 def ping_check(ip, count=4, timeout=2):
     try:
@@ -100,13 +109,26 @@ def probe_wiz(ip):
     return (ip, False, "Host unreachable / offline")
 
 def probe_yeelight(ip):
-    # 1. Test TCP connect to port 55443 (LAN Control port)
+    # 1. Test TCP connect to port 55443 and discover hardware model
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(2.5)
     try:
         s.connect((ip, 55443))
+        model_info = ""
+        try:
+            cmd = json.dumps({"id": 1, "method": "get_prop", "params": ["name", "model"]}) + "\r\n"
+            s.sendall(cmd.encode("utf-8"))
+            resp = json.loads(s.recv(1024).decode("utf-8"))
+            if "result" in resp and len(resp["result"]) >= 2:
+                d_name, d_model = resp["result"][0], resp["result"][1]
+                friendly = MODEL_NAMES.get(d_model, d_model)
+                model_info = f"{friendly} (model: {d_model})"
+                if d_name:
+                    model_info = f"{d_name} - {model_info}"
+        except Exception:
+            pass
         s.close()
-        return (ip, True, "")
+        return (ip, True, model_info)
     except ConnectionRefusedError:
         return (ip, False, "Connection refused on port 55443 — LAN Control is disabled in Yeelight app")
     except socket.timeout:
@@ -120,7 +142,6 @@ def probe_yeelight(ip):
         return (ip, False, f"TCP 55443 error: {e}")
 
 def probe_kasa(ip):
-    # 1. Test TCP connect to port 9999
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(2.0)
@@ -129,7 +150,6 @@ def probe_kasa(ip):
         return (ip, True, "")
     except Exception:
         pass
-    # 2. Multi-packet ICMP ping fallback
     if ping_check(ip, count=4, timeout=2):
         return (ip, True, "")
     return (ip, False, "Host unreachable / offline")
@@ -138,11 +158,11 @@ def run_probes(ip_list, probe_fn, dev_type):
     with ThreadPoolExecutor(max_workers=10) as ex:
         results = list(ex.map(probe_fn, ip_list))
     online = []
-    for ip, ok, err_reason in results:
+    for ip, ok, extra in results:
         if ok:
-            online.append(ip)
+            online.append((ip, extra))
         else:
-            print(f"[OpenRGB] Safeguard: {dev_type} {ip} is unavailable ({err_reason}); skipping from config to prevent 60s DetectionManager freeze.")
+            print(f"[OpenRGB] Safeguard: {dev_type} {ip} is unavailable ({extra}); skipping from config to prevent 60s DetectionManager freeze.")
     return online
 
 online_wiz = run_probes(wiz_raw, probe_wiz, "Philips WiZ")
@@ -164,26 +184,25 @@ if online_wiz:
             "selected_white_strategy": wiz_strategy,
             "use_cool_white": False,
             "use_warm_white": False
-        } for ip in online_wiz]
+        } for ip, _ in online_wiz]
     }
 else:
     cfg["PhilipsWizDevices"] = None
 
 if online_yeelight:
-    # Always enforce music_mode: false. In Docker / HAOS, music_mode: true triggers OpenRGB tcp_server_listen()
-    # reverse-connection wait on the container's internal hostname, which deadlocks DetectionManager for 60 seconds.
+    # Always enforce music_mode: false to prevent reverse-socket deadlock in Docker
     cfg["YeelightDevices"] = {
         "devices": [{
             "ip": ip,
             "music_mode": False
-        } for ip in online_yeelight]
+        } for ip, _ in online_yeelight]
     }
 else:
     cfg["YeelightDevices"] = None
 
 if online_kasa:
     cfg["KasaSmartDevices"] = {
-        "devices": [{"ip": ip} for ip in online_kasa]
+        "devices": [{"ip": ip} for ip, _ in online_kasa]
     }
 else:
     cfg["KasaSmartDevices"] = None
@@ -200,9 +219,14 @@ cfg["Detectors"]["detectors"]["HyperX QuadCast 2 S"] = True
 with open(cfg_file, "w") as f:
     json.dump(cfg, f, indent=4)
 
-print(f"Configured Online Philips WiZ IPs : {', '.join(online_wiz) if online_wiz else 'None'}")
-print(f"Configured Online Yeelight IPs    : {', '.join(online_yeelight) if online_yeelight else 'None'}")
-print(f"Configured Online Kasa Smart IPs  : {', '.join(online_kasa) if online_kasa else 'None'}")
+print(f"Configured Online Philips WiZ IPs : {', '.join([ip for ip, _ in online_wiz]) if online_wiz else 'None'}")
+if online_yeelight:
+    print("Configured Online Yeelight Devices:")
+    for ip, extra in online_yeelight:
+        print(f"  - {ip}: {extra if extra else 'Yeelight Device'}")
+else:
+    print("Configured Online Yeelight IPs    : None")
+print(f"Configured Online Kasa Smart IPs  : {', '.join([ip for ip, _ in online_kasa]) if online_kasa else 'None'}")
 EOF
 
 echo "------------------------------------------------------------------"
