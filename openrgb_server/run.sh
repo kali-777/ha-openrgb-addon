@@ -17,7 +17,7 @@ SERVER_HOST=$(jq -r '.server_host // "0.0.0.0"' "${OPTIONS_FILE}")
 LOG_LEVEL=$(jq -r '.log_level // "info"' "${OPTIONS_FILE}")
 LIST_DEVICES=$(jq -r '.list_devices_on_start // true' "${OPTIONS_FILE}")
 WIZ_WHITE_STRATEGY=$(jq -r '.wiz_white_strategy // "Average"' "${OPTIONS_FILE}")
-YEELIGHT_MUSIC_MODE=$(jq -r '.yeelight_music_mode // true' "${OPTIONS_FILE}")
+YEELIGHT_MUSIC_MODE=$(jq -r '.yeelight_music_mode // false' "${OPTIONS_FILE}")
 EXTRA_ARGS=$(jq -r '.extra_args // ""' "${OPTIONS_FILE}")
 ENABLE_DDC=$(jq -r '.enable_ddc // true' "${OPTIONS_FILE}")
 
@@ -32,12 +32,13 @@ cleanup() {
 trap cleanup EXIT SIGINT SIGTERM
 
 echo "=================================================================="
-echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.1.6)"
+echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.1.7)"
 echo "=================================================================="
 echo "OpenRGB Version : $(openrgb --version 2>/dev/null | head -n 1 || echo 'OpenRGB 1.0+')"
 echo "Bind Address    : ${SERVER_HOST}:${SERVER_PORT}"
 echo "Config Directory: ${CONFIG_DIR}"
 echo "I2C Bus Devices : $(ls -d /dev/i2c* 2>/dev/null | tr '\n' ' ' || echo 'None detected')"
+echo "Security Notice : For DDC/CI monitor control via /dev/i2c-*, ensure 'Protection mode' is toggled OFF (Unprotected mode) in the add-on settings."
 
 # Start Generic DDC/CI Monitor Control Service if enabled
 if [ "${ENABLE_DDC}" = "true" ]; then
@@ -54,7 +55,7 @@ if [ ! -f "${CONFIG_FILE}" ]; then
 fi
 
 # Pre-flight reachability probe for configured network smart lights (WiZ, Yeelight, Kasa)
-# Prevents offline IP addresses from triggering OpenRGB's 60-second DetectionManager freeze
+# Uses multi-packet ping and direct port checks to handle high-jitter 2.4GHz Wi-Fi and prevent 60s DetectionManager freezes
 echo "Checking network smart lights reachability..."
 python3 - <<'EOF' "${OPTIONS_FILE}" "${CONFIG_FILE}" "${WIZ_WHITE_STRATEGY}" "${YEELIGHT_MUSIC_MODE}"
 import json
@@ -76,52 +77,75 @@ wiz_raw = [ip.strip() for ip in opts.get("wiz_ips", []) if ip and ip.strip()]
 yeelight_raw = [ip.strip() for ip in opts.get("yeelight_ips", []) if ip and ip.strip()]
 kasa_raw = [ip.strip() for ip in opts.get("kasa_ips", []) if ip and ip.strip()]
 
-def is_reachable(ip, default_port):
-    # 1. Quick ICMP ping (1 packet, 1s timeout)
+def ping_check(ip, count=4, timeout=2):
     try:
-        res = subprocess.run(["ping", "-c", "1", "-W", "1", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if res.returncode == 0:
-            return True
+        res = subprocess.run(["ping", "-c", str(count), "-W", str(timeout), ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return res.returncode == 0
+    except Exception:
+        return False
+
+def probe_wiz(ip):
+    # 1. Quick UDP getPilot test (port 38899)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(1.5)
+        s.sendto(b'{"method":"getPilot","params":{}}', (ip, 38899))
+        data, _ = s.recvfrom(1024)
+        s.close()
+        if data:
+            return (ip, True, "")
     except Exception:
         pass
-    # 2. For Philips WiZ (UDP 38899), send a quick UDP getPilot probe
-    if default_port == 38899:
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.settimeout(1.0)
-            s.sendto(b'{"method":"getPilot","params":{}}', (ip, 38899))
-            data, _ = s.recvfrom(1024)
-            s.close()
-            if data:
-                return True
-        except Exception:
-            pass
-    # 3. If TCP port specified (Yeelight=55443, Kasa=9999), test TCP connect
-    elif default_port > 0:
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1.0)
-            s.connect((ip, default_port))
-            s.close()
-            return True
-        except Exception:
-            pass
-    return False
+    # 2. Multi-packet ICMP ping fallback
+    if ping_check(ip, count=4, timeout=2):
+        return (ip, True, "")
+    return (ip, False, "Host unreachable / offline")
 
-def probe_list(ip_list, port, dev_type):
+def probe_yeelight(ip):
+    # 1. Test TCP connect to port 55443 (LAN Control port)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(2.0)
+        s.connect((ip, 55443))
+        s.close()
+        return (ip, True, "")
+    except Exception:
+        pass
+
+    # 2. If TCP failed, check if device responds to ping to give an exact diagnostic
+    if ping_check(ip, count=4, timeout=2):
+        return (ip, False, "Responded to ping, but TCP port 55443 is closed/timed out (ensure 'LAN Control' is enabled in Yeelight app)")
+    return (ip, False, "Host unreachable / offline")
+
+def probe_kasa(ip):
+    # 1. Test TCP connect to port 9999
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(2.0)
+        s.connect((ip, 9999))
+        s.close()
+        return (ip, True, "")
+    except Exception:
+        pass
+    # 2. Multi-packet ICMP ping fallback
+    if ping_check(ip, count=4, timeout=2):
+        return (ip, True, "")
+    return (ip, False, "Host unreachable / offline")
+
+def run_probes(ip_list, probe_fn, dev_type):
     with ThreadPoolExecutor(max_workers=10) as ex:
-        statuses = list(ex.map(lambda ip: (ip, is_reachable(ip, port)), ip_list))
+        results = list(ex.map(probe_fn, ip_list))
     online = []
-    for ip, reachable in statuses:
-        if reachable:
+    for ip, ok, err_reason in results:
+        if ok:
             online.append(ip)
         else:
-            print(f"[OpenRGB] Safeguard: {dev_type} {ip} is currently OFFLINE / unreachable; skipping from config to prevent 60s DetectionManager freeze.")
+            print(f"[OpenRGB] Safeguard: {dev_type} {ip} is unavailable ({err_reason}); skipping from config to prevent 60s DetectionManager freeze.")
     return online
 
-online_wiz = probe_list(wiz_raw, 38899, "Philips WiZ")
-online_yeelight = probe_list(yeelight_raw, 55443, "Xiaomi Yeelight")
-online_kasa = probe_list(kasa_raw, 9999, "TP-Link Kasa")
+online_wiz = run_probes(wiz_raw, probe_wiz, "Philips WiZ")
+online_yeelight = run_probes(yeelight_raw, probe_yeelight, "Xiaomi Yeelight")
+online_kasa = run_probes(kasa_raw, probe_kasa, "TP-Link Kasa")
 
 cfg = {}
 if os.path.exists(cfg_file):
