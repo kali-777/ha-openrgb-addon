@@ -26,7 +26,7 @@ This Home Assistant OS add-on combines two powerful hardware control engines int
 > OpenRGB connects directly to Wi-Fi network smart lights over raw TCP/UDP sockets by IP address.
 > - **Assign Fixed IPs:** You **must** configure static DHCP IP reservations in your Wi-Fi router or gateway (e.g., TP-Link Omada, ER605, UniFi, ASUS, etc.) for each smart light (`wiz_ips`, `yeelight_ips`, `kasa_ips`). If a light gets a new dynamic IP after a router reboot, OpenRGB will lose connection to it.
 > - **Xiaomi Yeelight LAN Control:** For Yeelight bulbs and light strips, open the **Yeelight App** (or Xiaomi Home), go to device settings, and ensure **LAN Control (Local Area Network Control)** is turned **ON**. This opens TCP port `55443` required by OpenRGB.
-> - **Offline Device Safeguard (v1.1.7):** The add-on includes an automated concurrent pre-flight reachability probe using 4-packet ICMP ping and direct service port tests (Yeelight TCP `55443`, Kasa TCP `9999`, WiZ UDP `38899`). Any light that is temporarily switched off at the wall or has LAN Control disabled is safely excluded from `OpenRGB.json` with a detailed log notice, preventing OpenRGB from freezing on dead sockets (`DetectionManager` 60s timeout) and ensuring USB peripherals always initialize instantly.
+> - **Offline Device Safeguard (v1.1.8):** The add-on includes an automated concurrent pre-flight reachability probe using 4-packet ICMP ping and direct service port tests (Yeelight TCP `55443`, Kasa TCP `9999`, WiZ UDP `38899`). Any light that is temporarily switched off at the wall or has LAN Control disabled is safely excluded from `OpenRGB.json` with a detailed log notice, preventing OpenRGB from freezing on dead sockets (`DetectionManager` 60s timeout) and ensuring USB peripherals always initialize instantly.
 
 ---
 
@@ -155,7 +155,6 @@ action:
 | `wiz_ips` | `["192.168.2.65"]` | List of Philips WiZ static IP addresses. |
 | `wiz_white_strategy` | `"Average"` | White LED calculation mode for WiZ lights (`Average`, `Lowest`, `None`). |
 | `yeelight_ips` | `[]` | List of Xiaomi Yeelight static IP addresses. |
-| `yeelight_music_mode` | `false` | Enables legacy reverse-connection TCP Music Mode (recommended `false` for Docker). |
 | `kasa_ips` | `[]` | List of TP-Link Kasa smart light IP addresses. |
 | `extra_args` | `""` | Additional CLI flags passed to `openrgb`. |
 

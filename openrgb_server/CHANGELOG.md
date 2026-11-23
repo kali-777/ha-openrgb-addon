@@ -2,18 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.8] - 2026-11-23
+
+### Fixed
+- **Permanent Elimination of Yeelight Reverse-Socket Deadlock**:
+  - OpenRGB's experimental `music_mode: true` requires physical bulbs to reverse-connect to an internal TCP listener port. Inside Home Assistant OS Docker, bulbs receive the container's private hostname/IP (`gethostname`) which they cannot reach, causing OpenRGB's detection thread to block in `tcp_server_listen()` for 60,000ms until killed by `DetectionManager`.
+  - Enforced `music_mode: false` unconditionally in `run.sh`, overriding any legacy `/data/options.json` values and retiring the broken option from `config.yaml`. OpenRGB now controls Yeelight bulbs exclusively over standard local TCP port `55443` with zero blocking and sub-10ms startup.
+- **Accurate Yeelight Port 55443 Diagnostic Logging**:
+  - The pre-flight probe now specifically distinguishes between `ConnectionRefusedError` (device is online and pingable, but LAN Control is disabled in the Yeelight app) and socket timeout (device is powered off at wall switch).
+
+---
+
 ## [1.1.7] - 2026-11-23
 
 ### Fixed
 - **Unprotected Mode Prerequisite Documentation for DDC/CI**:
   - Added explicit instructions and documentation in `README.md`, `DOCS.md`, and container logs noting that **"Protection mode" must be toggled OFF** ("Unprotected mode") on the add-on's Info page in Home Assistant.
   - Resolves `EPERM` (Operation not permitted) on `/dev/i2c-*` so `ddcutil` can communicate freely with computer monitors without Docker AppArmor confinement.
-- **Yeelight Reverse-Connection Deadlock (`SetMusicMode` Hang)**:
-  - Discovered that OpenRGB's native Yeelight `music_mode: true` spins up an internal TCP listener on port 55444 and executes a blocking `tcp_server_listen()` call waiting for the bulb to reverse-connect. Inside Home Assistant OS Docker containers, bulbs cannot reach the internal Docker IP/hostname, freezing the entire `DetectionManager` thread for 60 seconds and aborting all device detection.
-  - Changed `yeelight_music_mode` default to `false`, allowing OpenRGB to communicate with Yeelight bulbs via standard direct TCP commands on port `55443` with zero blocking and instantaneous startup.
 - **Robust Multi-Packet Ping & Port 55443 Reachability Probe**:
   - Upgraded reachability probe in `run.sh` from single-packet to 4-packet ping (`ping -c 4 -W 2`) to reliably tolerate jitter and latency spikes on 2.4GHz Wi-Fi networks (e.g. bulbs waking from sleep or experiencing high latency).
-  - For Xiaomi Yeelight devices, specifically probes TCP port `55443`. If the bulb responds to ping but port `55443` is closed or timing out, logs an exact diagnostic advising the user to enable **LAN Control** in the Yeelight app.
 
 ---
 

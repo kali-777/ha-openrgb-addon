@@ -1,5 +1,5 @@
 name: "OpenRGB SDK Server"
-version: "1.1.7"
+version: "1.1.8"
 slug: "openrgb_server"
 description: "Headless OpenRGB SDK Server (v1.0+) & Generic DDC/CI Monitor Control for Home Assistant OS — supports direct USB HID, WiZ, Yeelight, Kasa, and automated DDC/CI monitor input switching, brightness, speaker volume & mute control."
 url: "https://github.com/kali-777/ha-openrgb-addon"
@@ -40,7 +40,6 @@ options:
     - "192.168.2.65"
   wiz_white_strategy: "Average"
   yeelight_ips: []
-  yeelight_music_mode: false
   kasa_ips: []
   extra_args: ""
 schema:
@@ -59,7 +58,6 @@ schema:
   wiz_white_strategy: "list(Average|Lowest|None)"
   yeelight_ips:
     - "str"
-  yeelight_music_mode: "bool"
   kasa_ips:
     - "str"
   extra_args: "str?"

@@ -1,4 +1,4 @@
-# Home Assistant Add-on: OpenRGB SDK Server & DDC/CI Monitor Control (`v1.1.7`)
+# Home Assistant Add-on: OpenRGB SDK Server & DDC/CI Monitor Control (`v1.1.8`)
 
 [![Open your Home Assistant instance and show the add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fkali-777%2Fha-openrgb-addon)
 
@@ -65,7 +65,7 @@ To sync real-time audio effects and music visualization with your OpenRGB device
    ```text
    https://github.com/kali-777/ha-openrgb-addon
    ```
-4. If already added, click **Check for updates** in the three dots menu, open **OpenRGB SDK Server**, and click **Update** to `v1.1.7`.
+4. If already added, click **Check for updates** in the three dots menu, open **OpenRGB SDK Server**, and click **Update** to `v1.1.8`.
 5. Ensure **Protection mode** is toggled **OFF** on the add-on Info page.
 
 ---
