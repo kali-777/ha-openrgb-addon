@@ -31,7 +31,7 @@ cleanup() {
 trap cleanup EXIT SIGINT SIGTERM
 
 echo "=================================================================="
-echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.1.9)"
+echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.1.10)"
 echo "=================================================================="
 echo "OpenRGB Version : $(openrgb --version 2>/dev/null | head -n 1 || echo 'OpenRGB 1.0+')"
 echo "Bind Address    : ${SERVER_HOST}:${SERVER_PORT}"
@@ -84,7 +84,7 @@ MODEL_NAMES = {
     "ceiling1": "Mi Ceiling Light",
 }
 
-def ping_check(ip, count=4, timeout=2):
+def ping_check(ip, count=5, timeout=4):
     try:
         res = subprocess.run(["ping", "-c", str(count), "-W", str(timeout), ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return res.returncode == 0
@@ -92,26 +92,39 @@ def ping_check(ip, count=4, timeout=2):
         return False
 
 def probe_wiz(ip):
-    # 1. Quick UDP getPilot test (port 38899)
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(1.5)
-        s.sendto(b'{"method":"getPilot","params":{}}', (ip, 38899))
-        data, _ = s.recvfrom(1024)
-        s.close()
-        if data:
-            return (ip, True, "")
-    except Exception:
-        pass
-    # 2. Multi-packet ICMP ping fallback
-    if ping_check(ip, count=4, timeout=2):
-        return (ip, True, "")
-    return (ip, False, "Host unreachable / offline")
+    # 1. Multi-attempt UDP getPilot query (port 38899) with 3.0s timeout to tolerate 2.4GHz Wi-Fi jitter
+    for attempt in range(3):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(3.0)
+            s.sendto(b'{"method":"getPilot","params":{}}', (ip, 38899))
+            data, _ = s.recvfrom(1024)
+            s.close()
+            if data:
+                extra = "WiZ Connected"
+                try:
+                    parsed = json.loads(data.decode("utf-8"))
+                    res = parsed.get("result", {})
+                    rssi = res.get("rssi")
+                    mac = res.get("mac")
+                    if rssi is not None and mac is not None:
+                        extra = f"WiZ Connected (RSSI: {rssi} dBm, MAC: {mac})"
+                    elif rssi is not None:
+                        extra = f"WiZ Connected (RSSI: {rssi} dBm)"
+                except Exception:
+                    pass
+                return (ip, True, extra)
+        except Exception:
+            pass
+    # 2. Multi-packet ICMP ping fallback (5 packets, 4s timeout)
+    if ping_check(ip, count=5, timeout=4):
+        return (ip, True, "Ping responsive")
+    return (ip, False, "Host unreachable / offline (3x UDP & 5x ICMP timed out)")
 
 def probe_yeelight(ip):
-    # 1. Test TCP connect to port 55443 and discover hardware model
+    # 1. Test TCP connect to port 55443 (3.5s timeout) and discover hardware model
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(2.5)
+    s.settimeout(3.5)
     try:
         s.connect((ip, 55443))
         model_info = ""
@@ -144,14 +157,14 @@ def probe_yeelight(ip):
 def probe_kasa(ip):
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(2.0)
+        s.settimeout(3.0)
         s.connect((ip, 9999))
         s.close()
-        return (ip, True, "")
+        return (ip, True, "Kasa Connected")
     except Exception:
         pass
-    if ping_check(ip, count=4, timeout=2):
-        return (ip, True, "")
+    if ping_check(ip, count=5, timeout=4):
+        return (ip, True, "Ping responsive")
     return (ip, False, "Host unreachable / offline")
 
 def run_probes(ip_list, probe_fn, dev_type):
@@ -219,14 +232,26 @@ cfg["Detectors"]["detectors"]["HyperX QuadCast 2 S"] = True
 with open(cfg_file, "w") as f:
     json.dump(cfg, f, indent=4)
 
-print(f"Configured Online Philips WiZ IPs : {', '.join([ip for ip, _ in online_wiz]) if online_wiz else 'None'}")
+if online_wiz:
+    print("Configured Online Philips WiZ Devices:")
+    for ip, extra in online_wiz:
+        print(f"  - {ip}: {extra if extra else 'Philips WiZ'}")
+else:
+    print("Configured Online Philips WiZ IPs : None")
+
 if online_yeelight:
     print("Configured Online Yeelight Devices:")
     for ip, extra in online_yeelight:
         print(f"  - {ip}: {extra if extra else 'Yeelight Device'}")
 else:
     print("Configured Online Yeelight IPs    : None")
-print(f"Configured Online Kasa Smart IPs  : {', '.join([ip for ip, _ in online_kasa]) if online_kasa else 'None'}")
+
+if online_kasa:
+    print("Configured Online Kasa Smart Devices:")
+    for ip, extra in online_kasa:
+        print(f"  - {ip}: {extra if extra else 'TP-Link Kasa'}")
+else:
+    print("Configured Online Kasa Smart IPs  : None")
 EOF
 
 echo "------------------------------------------------------------------"

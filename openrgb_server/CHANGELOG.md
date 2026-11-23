@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.10] - 2026-11-24
+
+### Fixed
+- **Resilient Multi-Attempt WiZ UDP Probing & Wi-Fi Jitter Tolerance**:
+  - Upgraded the Philips WiZ pre-flight reachability probe in `run.sh` from a single 1.5s UDP query to 3 sequential UDP attempts with 3.0s timeout, plus a 5-packet ICMP fallback with 4.0s timeout.
+  - Prevents false-negative offline skips during Wi-Fi congestion, router re-associations, or power-cut recovery when 2.4GHz latency spikes (up to 3,500ms).
+  - Automatically parses WiZ `getPilot` responses to display real-time signal strength (`RSSI: -XX dBm`) and hardware MAC address directly in the add-on startup log.
+- **Extended TCP Timeouts for Yeelight & Kasa**:
+  - Increased Yeelight and Kasa TCP reachability timeouts to 3.5s and 3.0s respectively, with 5-packet ICMP ping fallback.
+
+---
+
 ## [1.1.9] - 2026-11-23
 
 ### Added
@@ -12,8 +24,7 @@ All notable changes to this project will be documented in this file.
 ### Documentation
 - Added important operational guidance in `README.md` and `DOCS.md` regarding the need to restart the LedFx add-on (up to 2x) whenever adding or removing smart lights so LedFx flushes its device cache and establishes a clean connection to the OpenRGB SDK server.
 
----
-
+---\n
 ## [1.1.8] - 2026-11-23
 
 ### Fixed
@@ -23,8 +34,7 @@ All notable changes to this project will be documented in this file.
 - **Accurate Yeelight Port 55443 Diagnostic Logging**:
   - The pre-flight probe now specifically distinguishes between `ConnectionRefusedError` (device is online and pingable, but LAN Control is disabled in the Yeelight app) and socket timeout (device is powered off at wall switch).
 
----
-
+---\n
 ## [1.1.7] - 2026-11-23
 
 ### Fixed
@@ -34,18 +44,15 @@ All notable changes to this project will be documented in this file.
 - **Robust Multi-Packet Ping & Port 55443 Reachability Probe**:
   - Upgraded reachability probe in `run.sh` from single-packet to 4-packet ping (`ping -c 4 -W 2`) to reliably tolerate jitter and latency spikes on 2.4GHz Wi-Fi networks (e.g. bulbs waking from sleep or experiencing high latency).
 
----
-
+---\n
 ## [1.1.6] - 2026-11-23
 
 ### Added
 - **Offline Network Device Safeguard & Fast Pre-Flight Reachability Probes**:
   - Implemented high-performance concurrent ICMP/TCP reachability probes in `run.sh` for all configured smart light IPs (`wiz_ips`, `yeelight_ips`, `kasa_ips`).
   - Automatically identifies and safely excludes offline or unreachable devices (such as powered-off wall switches or IPs added for later) before passing configurations into `OpenRGB.json`.
-  - **Eliminates Detection Deadlock:** Prevents OpenRGB's `DetectionManager` from hanging for 60 seconds on dead sockets (`Gave up waiting for detection after 60000 ms`), ensuring USB hardware (Razer keyboards, HyperX microphones) and online smart lights are detected instantaneously with 100% reliability every single startup.
-
----
-
+  - **Eliminates Detection Deadlock:** Prevents OpenRGB's `DetectionManager` from hanging for 60 seconds on dead sockets (`Gave up waiting for detection after 60000 ms`), ensuring USB hardware (Razer keyboards, HyperX microphones) and online smart lights are detected instantaneously with 100% reliability every single startup.\n
+---\n
 ## [1.1.5] - 2026-11-23
 
 ### Added
@@ -59,8 +66,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **Empty Displays Mutex State**: Corrected `detect_monitors()` to update and lock `manager.monitors` cleanly when zero displays are reported by `ddcutil`, preventing stale display state caching.
 
----
-
+---\n
 ## [1.1.4] - 2026-11-23
 
 ### Fixed
@@ -70,8 +76,7 @@ All notable changes to this project will be documented in this file.
 - **Real-Time App Logging**: Added `PYTHONUNBUFFERED=1` and `-u` flag to `ddc_service.py` to stream all DDC hardware diagnostics directly into the Home Assistant App Logs in real time.
 - **Masked Password Field**: Configured `mqtt_password: "password"` in add-on schema to securely mask MQTT broker passwords in the Home Assistant UI.
 
----
-
+---\n
 ## [1.1.3] - 2026-11-23
 
 ### Fixed
@@ -80,18 +85,15 @@ All notable changes to this project will be documented in this file.
 - **Manual Credentials Fallback**: Full support for manual `mqtt_username` and `mqtt_password` in options for external brokers or custom users.
 - **Repository Metadata & Branding Restoration**: Fixed add-on catalog sync to ensure the OpenRGB logo, documentation tab, changelog, and update badges persist without supervisor detachment.
 
----
-
+---\n
 ## [1.1.2] - 2026-11-23
 
 ### Fixed
 - **Repository Schema Validation & Logo Recovery**: Fixed `config.yaml` schema compliance with Home Assistant Supervisor (`SCHEMA_ADDON_CONFIG`) by removing redundant `devices` list under `full_access: true`, resolving `password?` schema type, and eliminating detached add-on status so the official OpenRGB logo, documentation, and update indicators restore properly in the HA UI.
 - **DDC/CI Display Detection**: Robust stdout display parsing in `ddc_service.py` to process connected displays regardless of non-zero scan warning codes on motherboard I2C buses.
-- **MQTT Authentication**: Added support for authenticated connections (`mqtt_username` and `mqtt_password`), eliminating Mosquitto error `code 5`.
-- **paho-mqtt 2.x Upgrade**: Eliminated Callback API v1 deprecation warnings.
+- **MQTT Authentication**: Added support for authenticated connections (`mqtt_username` and `mqtt_password`), eliminating Mosquitto error `code 5`.\n- **paho-mqtt 2.x Upgrade**: Eliminated Callback API v1 deprecation warnings.
 
----
-
+---\n
 ## [1.1.0] - 2026-11-23
 
 ### Added
@@ -121,8 +123,7 @@ All notable changes to this project will be documented in this file.
     - `GET /setvcp?vcp=0xXX&val=0xYY`: Raw low-level VCP register access.
   - Bundled `ddcutil` and `python3-paho-mqtt` in add-on container.
 
----
-
+---\n
 ## [1.0.3] - 2026-11-22
 
 ### Added
@@ -131,20 +132,18 @@ All notable changes to this project will be documented in this file.
 - Philips WiZ light bar bridging with selectable white channel strategies (`Average`, `Lowest`, `None`).
 - Dedicated TCP OpenRGB SDK server listening on `0.0.0.0:6742`.
 
----
-
+---\n
 ## [1.0.2] - 2026-11-21
 
 ### Added
 - Xiaomi Yeelight TCP Fast Music Mode streaming support.
 - TP-Link Kasa smart Wi-Fi lighting integration.
 
----
-
+---\n
 ## [1.0.1] - 2026-11-20
 
 ### Added
 - Automated startup device enumeration in log (`openrgb --list-devices`).
 - Multi-architecture build support (`amd64`, `aarch64`, `armv7`).
 
----
+---\n
