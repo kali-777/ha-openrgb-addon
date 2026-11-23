@@ -5,15 +5,14 @@ This Home Assistant OS add-on combines two powerful hardware control engines int
 1. **Headless OpenRGB SDK Server (`v1.0+`)**: Direct USB HID peripheral RGB control (HyperX DuoCast, Razer, etc.) and Wi-Fi smart light bridging (Philips WiZ, Xiaomi Yeelight, TP-Link Kasa) for LedFx and Home Assistant.
 2. **Generic DDC/CI Hardware Monitor Controller**: Direct I2C/DDC bus control of connected computer monitors via `ddcutil`, enabling input switching (HDMI, DisplayPort, USB-C), hardware speaker volume, mute, brightness, and power management without needing custom OS display drivers or Docker sidecars.
 
----
-
-## Hardware Monitor Control (DDC/CI)
+---\n## Hardware Monitor Control (DDC/CI)
 
 ### Key Capabilities
 - **Input Source Switching (`VCP 0x60`)**: Switch between work laptops, gaming PCs, and server consoles instantly via Home Assistant dashboard buttons, automations, or physical Stream Dock dials.
 - **Hardware Audio Speaker Volume (`VCP 0x62`) & Mute (`VCP 0x8D`)**: Control internal monitor stereo speakers directly from HA sliders or rotary knobs.
 - **Circadian & Lux Backlight / Contrast (`VCP 0x10` & `0x12`)**: Dynamically sync monitor brightness with room illuminance or time-of-day curves.
 - **Display Power / Standby (`VCP 0xD6`)**: Put monitor panels into low-power standby mode when you leave the office.
+- **Dynamic Hotplug Rescan**: Background thread periodically probes for newly attached or powered-on displays and automatically registers them with Home Assistant via MQTT Discovery as soon as they receive AC power.
 
 ### Home Assistant MQTT Auto-Discovery Entities
 When `ddc_mqtt_discovery: true` (default), the add-on automatically detects all connected DDC-capable monitors and publishes native Home Assistant entities named with the pattern `<vendor>_<model>_monitor_<feature>`:
@@ -29,9 +28,7 @@ When `ddc_mqtt_discovery: true` (default), the add-on automatically detects all 
 | `button` | `button.asus_va34vcpsr_monitor_switch_to_usb_c` | One-click button to switch directly to USB-C |
 | `button` | `button.asus_va34vcpsr_monitor_switch_to_displayport_1` | One-click button to switch directly to DisplayPort-1 |
 
----
-
-## Embedded REST API Reference (Port 6743)
+---\n## Embedded REST API Reference (Port 6743)
 
 The add-on runs an embedded HTTP REST server on port `6743` (configurable) for direct local network control:
 
@@ -39,6 +36,9 @@ The add-on runs an embedded HTTP REST server on port `6743` (configurable) for d
 
 - **`GET /displays`** (or `/status`):
   Returns a full JSON list of detected monitors, active input, volume, brightness, and capabilities.
+
+- **`GET /rescan`** (or `/detect`):
+  Forces an immediate synchronous hardware bus rescan, detects newly powered-on or hotplugged monitors, and re-publishes Home Assistant MQTT discovery topics.
 
 - **`GET /input?to=<source>&display=1`**:
   Switches the active display input. Accepts input names or hex codes:
@@ -65,9 +65,7 @@ The add-on runs an embedded HTTP REST server on port `6743` (configurable) for d
 - **`GET /setvcp?vcp=0xXX&val=0xYY&display=1`**:
   Sends a raw VCP feature code and value directly to the monitor.
 
----
-
-## Home Assistant Automation Examples
+---\n## Home Assistant Automation Examples
 
 ### 1. Switch to Work Laptop (USB-C) on Workday Morning
 ```yaml
@@ -110,9 +108,7 @@ action:
       option: "HDMI-1"
 ```
 
----
-
-## Configuration Options
+---\n## Configuration Options
 
 | Option | Default | Description |
 | :--- | :--- | :--- |
@@ -132,9 +128,7 @@ action:
 | `kasa_ips` | `[]` | List of TP-Link Kasa smart light IP addresses. |
 | `extra_args` | `""` | Additional CLI flags passed to `openrgb`. |
 
----
-
-## OpenRGB & LedFx Setup
+---\n## OpenRGB & LedFx Setup
 
 1. Start this add-on and check the **Log** tab to see your OpenRGB device indices (e.g., `0: HyperX DuoCast`, `1: Philips WiZ`).
 2. Open **LedFx** $\rightarrow$ **Add Device** $\rightarrow$ select **`openrgb`**:

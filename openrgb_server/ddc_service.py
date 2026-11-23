@@ -5,37 +5,27 @@ Provides:
   1. REST API on port 6743 (by default) for direct input/brightness/volume/mute/power switching
   2. Home Assistant MQTT Auto-Discovery (select, number, switch, button entities)
   3. Dynamic naming standard: <vendor>_<model>_monitor_<feature> (e.g., asus_va34vcpsr_monitor_input_source)
-  4. Automatic Supervisor Mosquitto authentication & manual credential support
+  4. Automatic hotplug rescan when monitors are powered on or reconnected
 Works dynamically with any monitor supported by ddcutil.
 """
 
 import sys
 import os
-
-os.environ["PYTHONUNBUFFERED"] = "1"
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(line_buffering=True)
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(line_buffering=True)
 import json
 import time
 import re
 import subprocess
 import threading
-import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 OPTIONS_FILE = "/data/options.json"
-SERVICES_FILE = "/data/services/mqtt.json"
-
 DDC_PORT = 6743
 MQTT_HOST = "127.0.0.1"
 MQTT_PORT = 1883
 POLL_INTERVAL = 60
 ENABLE_MQTT = True
 
-# Load options from Home Assistant options.json
 if os.path.exists(OPTIONS_FILE):
     try:
         with open(OPTIONS_FILE, "r") as f:
@@ -44,81 +34,7 @@ if os.path.exists(OPTIONS_FILE):
             ENABLE_MQTT = bool(opts.get("ddc_mqtt_discovery", True))
             POLL_INTERVAL = int(opts.get("ddc_poll_interval", 60))
     except Exception as e:
-        print(f"[DDC] Error loading options.json: {e}", file=sys.stderr, flush=True)
-
-
-def resolve_mqtt_credentials():
-    """
-    Resolves MQTT credentials with priority:
-    1. User manual options (mqtt_username / mqtt_password in options.json)
-    2. Supervisor Service API (http://supervisor/services/mqtt via SUPERVISOR_TOKEN)
-    3. Injected service file (/data/services/mqtt.json)
-    4. Environment variables
-    """
-    host = MQTT_HOST
-    port = MQTT_PORT
-    user = None
-    password = None
-
-    # 1. Manual user configuration
-    if os.path.exists(OPTIONS_FILE):
-        try:
-            with open(OPTIONS_FILE, "r") as f:
-                opts = json.load(f)
-                u = opts.get("mqtt_username", "").strip()
-                p = opts.get("mqtt_password", "").strip()
-                if u and p:
-                    print(f"[DDC] Using manually configured MQTT credentials for user '{u}'", flush=True)
-                    return host, port, u, p
-        except Exception:
-            pass
-
-    # 2. Supervisor API (automatic when hassio_api: true)
-    sup_token = os.environ.get("SUPERVISOR_TOKEN")
-    if sup_token:
-        try:
-            req = urllib.request.Request(
-                "http://supervisor/services/mqtt",
-                headers={"Authorization": f"Bearer {sup_token}"}
-            )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                if resp.status == 200:
-                    payload = json.loads(resp.read().decode("utf-8"))
-                    svc_data = payload.get("data", {})
-                    host = svc_data.get("host", host)
-                    port = int(svc_data.get("port", port))
-                    user = svc_data.get("username")
-                    password = svc_data.get("password")
-                    if user and password:
-                        print(f"[DDC] Auto-discovered Mosquitto credentials from Supervisor API: user '{user}'", flush=True)
-                        return host, port, user, password
-        except Exception as e:
-            print(f"[DDC] Note: Supervisor MQTT API not available or no broker service linked: {e}", file=sys.stderr, flush=True)
-
-    # 3. /data/services/mqtt.json
-    if os.path.exists(SERVICES_FILE):
-        try:
-            with open(SERVICES_FILE, "r") as f:
-                svc = json.load(f)
-                host = svc.get("host", host)
-                port = int(svc.get("port", port))
-                user = svc.get("username")
-                password = svc.get("password")
-                if user and password:
-                    print(f"[DDC] Read MQTT credentials from {SERVICES_FILE}: user '{user}'", flush=True)
-                    return host, port, user, password
-        except Exception:
-            pass
-
-    # 4. Fallback environment variables
-    env_u = os.environ.get("MQTT_USER")
-    env_p = os.environ.get("MQTT_PASSWORD")
-    if env_u and env_p:
-        return host, port, env_u, env_p
-
-    print("[DDC] No MQTT credentials found; will attempt connection without auth.", file=sys.stderr, flush=True)
-    return host, port, None, None
-
+        print(f"[DDC] Error loading options.json: {e}", file=sys.stderr)
 
 # Common 3-letter EDID manufacturer lookup table
 MFG_LOOKUP = {
@@ -168,8 +84,7 @@ VESA_INPUT_MAP = {
     0x15: "HDMI-4",
     0x16: "DisplayPort-3",
     0x17: "DisplayPort-4",
-    0x1A: "USB-C",
-    0x1B: "USB-C-2",
+    0x1A: "USB-C",  # ASUS VA34VCPSR & modern vendor Alt-Mode code
 }
 
 INPUT_NAME_TO_HEX = {name.lower(): code for code, name in VESA_INPUT_MAP.items()}
@@ -194,7 +109,7 @@ INPUT_NAME_TO_HEX.update({
 def run_ddcutil(*args):
     cmd = ["ddcutil"] + list(args)
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
         return res.returncode, res.stdout, res.stderr
     except subprocess.TimeoutExpired:
         return -1, "", "Timeout waiting for ddcutil"
@@ -216,7 +131,9 @@ class MonitorManager:
         monitors = []
 
         if not out or "Display" not in out:
-            print(f"[DDC] No monitors detected in output (exit code {code}). Stderr: {err.strip()}", file=sys.stderr, flush=True)
+            print(f"[DDC] No monitors detected in output (exit code {code}). Stderr: {err.strip()}", file=sys.stderr)
+            with self.lock:
+                self.monitors = monitors
             return monitors
 
         blocks = re.split(r"\n(?=Display\s+\d+)", out)
@@ -260,7 +177,7 @@ class MonitorManager:
 
             supported_inputs = self.query_supported_inputs(disp_id)
             if not supported_inputs:
-                supported_inputs = [0x0F, 0x11, 0x1A]
+                supported_inputs = [0x0F, 0x10, 0x11, 0x12, 0x1A]
 
             input_options = []
             for h in supported_inputs:
@@ -289,8 +206,8 @@ class MonitorManager:
                 "has_mute": (cur_mute_val is not None),
             }
             monitors.append(mon)
-            print(f"[DDC] Discovered: Display {disp_id} - {mfg} {model} (SN: {clean_sn}) on {bus}", flush=True)
-            print(f"[DDC]   Entity Prefix: {entity_prefix} | Current Input: {cur_input_name} | Audio: {mon['has_audio']}", flush=True)
+            print(f"[DDC] Discovered: Display {disp_id} - {mfg} {model} (SN: {clean_sn}) on {bus}")
+            print(f"[DDC]   Entity Prefix: {entity_prefix} | Current Input: {cur_input_name} | Audio: {mon['has_audio']}")
 
         with self.lock:
             self.monitors = monitors
@@ -321,62 +238,76 @@ class MonitorManager:
                                 inputs.append(val)
                         except ValueError:
                             pass
-        return inputs
+
+        # Always ensure standard ports if empty
+        if not inputs:
+            inputs = [0x0F, 0x11, 0x1A]
+        return sorted(inputs)
 
     def get_vcp(self, disp_id, vcp_code):
-        vcp_hex = f"0x{vcp_code:02x}"
-        code, out, _ = run_ddcutil("--display", str(disp_id), "getvcp", vcp_hex, "--terse")
-        if out:
-            for line in out.strip().splitlines():
-                parts = line.strip().split()
-                if len(parts) >= 4 and parts[0] == "VCP":
-                    val_type = parts[2]
-                    raw = parts[3].lower().replace("0x", "").lstrip("x")
+        hex_code = f"{vcp_code:02x}"
+        code, out, _ = run_ddcutil("--display", str(disp_id), "getvcp", hex_code, "--terse")
+        if code == 0 and out:
+            parts = out.strip().split()
+            # Standard VCP: VCP 10 C 50 100
+            if len(parts) >= 4 and parts[0] == "VCP":
+                try:
+                    return int(parts[3])
+                except ValueError:
+                    pass
+            # Terse formatted: VCP 60 x11
+            for p in parts[2:]:
+                clean_p = p.lower().lstrip("x")
+                try:
+                    return int(clean_p, 16)
+                except ValueError:
                     try:
-                        if val_type in ("SNC", "NC"):
-                            return int(raw, 16)
-                        else:
-                            return int(raw, 10)
+                        return int(clean_p, 10)
                     except ValueError:
-                        try:
-                            return int(raw, 16)
-                        except ValueError:
-                            pass
+                        pass
 
-        # Robust regex fallback on standard getvcp:
-        code, out, _ = run_ddcutil("--display", str(disp_id), "getvcp", vcp_hex)
-        if out:
-            m = re.search(r"Volume level:\s*(\d+)", out, re.IGNORECASE)
+        # Fallback to non-terse parser
+        code, out, _ = run_ddcutil("--display", str(disp_id), "getvcp", hex_code)
+        if code == 0 and out:
+            m = re.search(r"current value\s*=\s*(\d+)", out, re.I)
             if m:
                 return int(m.group(1))
-            m = re.search(r"sl=0x([0-9a-fA-F]+)", out)
-            if m:
-                return int(m.group(1), 16)
-            m = re.search(r"current value\s*=\s*(\d+)", out, re.IGNORECASE)
-            if m:
-                return int(m.group(1))
-
+            m_hex = re.search(r"\(sl\s*=\s*0x([0-9a-fA-F]+)\)", out)
+            if m_hex:
+                return int(m_hex.group(1), 16)
+            m_val = re.search(r"value\s*=\s*(\d+)", out, re.I)
+            if m_val:
+                return int(m_val.group(1))
         return None
 
     def set_vcp(self, disp_id, vcp_code, value):
-        vcp_hex = f"0x{vcp_code:02x}" if isinstance(vcp_code, int) else str(vcp_code)
-        val_hex = f"0x{value:02x}" if isinstance(value, int) else str(value)
-        code, out, err = run_ddcutil("--display", str(disp_id), "--noverify", "setvcp", vcp_hex, val_hex)
-        return code == 0, out if code == 0 else err
+        if isinstance(vcp_code, str):
+            vcp_str = vcp_code if vcp_code.startswith("0x") else f"0x{vcp_code}"
+        else:
+            vcp_str = f"0x{vcp_code:02x}"
+
+        if isinstance(value, str):
+            val_str = value if value.startswith("0x") else str(int(value))
+        else:
+            val_str = str(value)
+
+        code, out, err = run_ddcutil("--display", str(disp_id), "setvcp", vcp_str, val_str)
+        if code == 0:
+            return True, "OK"
+        return False, err.strip() or out.strip() or f"Error code {code}"
 
     def set_input(self, disp_id, input_target):
         val = None
-        mon = next((m for m in self.monitors if m["display"] == disp_id), None)
-        supported_codes = mon.get("supported_input_codes", []) if mon else []
-
         if isinstance(input_target, int):
             val = input_target
         elif isinstance(input_target, str):
             clean = input_target.strip().lower()
-            if clean in ("usbc", "usb-c", "typec", "type-c", "work"):
-                if "0x1a" in supported_codes:
+            if clean in ("work", "usbc", "usb-c", "typec", "type-c"):
+                # Detect supported USB-C code (0x1A or 0x13)
+                mon = next((m for m in self.monitors if m["display"] == disp_id), None)
+                if mon and "0x1a" in mon["supported_input_codes"]:
                     val = 0x1A
-                elif "0x13" in supported_codes:
+                elif mon and "0x13" in mon["supported_input_codes"]:
                     val = 0x13
                 else:
                     val = 0x1A
@@ -427,7 +358,7 @@ class MQTTClientManager:
         try:
             import paho.mqtt.client as mqtt
         except ImportError:
-            print("[DDC] paho-mqtt not installed; skipping MQTT discovery.", file=sys.stderr, flush=True)
+            print("[DDC] paho-mqtt not installed; skipping MQTT discovery.", file=sys.stderr)
             return
 
         host, port, user, password = resolve_mqtt_credentials()
@@ -436,19 +367,18 @@ class MQTTClientManager:
             rc = args[3] if len(args) >= 4 else args[-1]
             code = rc.value if hasattr(rc, "value") else (int(rc) if isinstance(rc, int) else 0)
             if code == 0:
-                print("[DDC] Connected successfully to MQTT broker. Publishing HA Discovery...", flush=True)
+                print("[DDC] Connected successfully to MQTT broker. Publishing HA Discovery...")
                 self.connected = True
                 self.publish_discovery()
                 self.publish_states()
             else:
-                print(f"[DDC] MQTT connection failed with code {code} ({rc})", file=sys.stderr, flush=True)
+                print(f"[DDC] MQTT connection failed with code {code} ({rc})", file=sys.stderr)
 
         def on_message(client, userdata, msg):
             try:
                 topic = msg.topic
                 payload = msg.payload.decode("utf-8").strip()
-                print(f"[DDC] MQTT message received: {topic} -> {payload}", flush=True)
-
+                print(f"[DDC] MQTT message received: {topic} -> {payload}")
                 parts = topic.split("/")
                 if len(parts) >= 5 and parts[0] == "ha_openrgb" and parts[1] == "ddc":
                     dev_id = parts[2]
@@ -496,7 +426,7 @@ class MQTTClientManager:
                         if ok:
                             self.publish_states(mon)
             except Exception as e:
-                print(f"[DDC] Error processing MQTT message: {e}", file=sys.stderr, flush=True)
+                print(f"[DDC] Error processing MQTT message: {e}", file=sys.stderr)
 
         try:
             try:
@@ -505,17 +435,17 @@ class MQTTClientManager:
                 self.client = mqtt.Client(client_id="ha_openrgb_ddc_service")
 
             if user and password:
-                print(f"[DDC] Authenticating with MQTT broker using username '{user}'", flush=True)
+                print(f"[DDC] Authenticating with MQTT broker using username '{user}'")
                 self.client.username_pw_set(user, password)
             else:
-                print("[DDC] Connecting to MQTT broker without authentication", flush=True)
+                print("[DDC] Connecting to MQTT broker without authentication")
 
             self.client.on_connect = on_connect
             self.client.on_message = on_message
             self.client.connect_async(host, port, 60)
             self.client.loop_start()
         except Exception as e:
-            print(f"[DDC] Could not connect to MQTT broker: {e}", file=sys.stderr, flush=True)
+            print(f"[DDC] Could not connect to MQTT broker: {e}", file=sys.stderr)
 
     def publish_discovery(self):
         if not self.connected or not self.client:
@@ -567,31 +497,30 @@ class MQTTClientManager:
             self.client.publish(bright_disc_topic, json.dumps(bright_config), retain=True)
 
             # 3. Contrast Number Entity
-            if mon.get("contrast") is not None:
-                contrast_disc_topic = f"homeassistant/number/{dev_id}_contrast/config"
-                contrast_config = {
-                    "name": "Contrast",
-                    "has_entity_name": True,
-                    "object_id": f"{prefix}_contrast",
-                    "unique_id": f"{dev_id}_contrast",
-                    "device": device_info,
-                    "icon": "mdi:contrast-circle",
-                    "min": 0,
-                    "max": 100,
-                    "step": 1,
-                    "state_topic": f"ha_openrgb/ddc/{dev_id}/contrast/state",
-                    "command_topic": f"ha_openrgb/ddc/{dev_id}/contrast/set",
-                }
-                self.client.publish(contrast_disc_topic, json.dumps(contrast_config), retain=True)
+            contrast_disc_topic = f"homeassistant/number/{dev_id}_contrast/config"
+            contrast_config = {
+                "name": "Contrast",
+                "has_entity_name": True,
+                "object_id": f"{prefix}_contrast",
+                "unique_id": f"{dev_id}_contrast",
+                "device": device_info,
+                "icon": "mdi:contrast-circle",
+                "min": 0,
+                "max": 100,
+                "step": 1,
+                "state_topic": f"ha_openrgb/ddc/{dev_id}/contrast/state",
+                "command_topic": f"ha_openrgb/ddc/{dev_id}/contrast/set",
+            }
+            self.client.publish(contrast_disc_topic, json.dumps(contrast_config), retain=True)
 
-            # 4. Speaker Volume Number Entity
+            # 4. Speaker Volume Number Entity (if supported)
             if mon["has_audio"]:
                 vol_disc_topic = f"homeassistant/number/{dev_id}_volume/config"
                 vol_config = {
                     "name": "Speaker Volume",
                     "has_entity_name": True,
                     "object_id": f"{prefix}_speaker_volume",
-                    "unique_id": f"{dev_id}_volume",
+                    "unique_id": f"{dev_id}_speaker_volume",
                     "device": device_info,
                     "icon": "mdi:volume-high",
                     "min": 0,
@@ -602,20 +531,16 @@ class MQTTClientManager:
                 }
                 self.client.publish(vol_disc_topic, json.dumps(vol_config), retain=True)
 
-            # 5. Audio Mute Switch Entity
+            # 5. Audio Mute Switch Entity (if supported)
             if mon["has_mute"]:
                 mute_disc_topic = f"homeassistant/switch/{dev_id}_mute/config"
                 mute_config = {
                     "name": "Audio Mute",
                     "has_entity_name": True,
                     "object_id": f"{prefix}_audio_mute",
-                    "unique_id": f"{dev_id}_mute",
+                    "unique_id": f"{dev_id}_audio_mute",
                     "device": device_info,
                     "icon": "mdi:volume-mute",
-                    "payload_on": "ON",
-                    "payload_off": "OFF",
-                    "state_on": "ON",
-                    "state_off": "OFF",
                     "state_topic": f"ha_openrgb/ddc/{dev_id}/mute/state",
                     "command_topic": f"ha_openrgb/ddc/{dev_id}/mute/set",
                 }
@@ -692,6 +617,22 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
                 "status": "ok",
                 "monitors_count": len(manager.monitors),
                 "monitors": manager.monitors
+            })
+            return
+
+        if path in ("/rescan", "/detect"):
+            print("[DDC] Manual/REST rescan requested via API...")
+            old_ids = {m["device_id"] for m in manager.monitors}
+            monitors = manager.detect_monitors()
+            new_ids = {m["device_id"] for m in monitors}
+            if mqtt_mgr and mqtt_mgr.connected:
+                mqtt_mgr.publish_discovery()
+                mqtt_mgr.publish_states()
+            self.send_json(200, {
+                "status": "ok",
+                "message": f"Rescan completed. {len(monitors)} monitor(s) found.",
+                "monitors_count": len(monitors),
+                "monitors": monitors
             })
             return
 
@@ -843,9 +784,22 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
 mqtt_mgr = None
 
 def poll_loop():
+    scan_tick = 0
     while True:
         time.sleep(POLL_INTERVAL)
+        scan_tick += 1
         try:
+            # If no monitors are detected, or every 5 poll intervals (~5 min), check for hotplugged / powered-on monitors
+            if not manager.monitors or scan_tick % 5 == 0:
+                old_ids = {m["device_id"] for m in manager.monitors}
+                new_monitors = manager.detect_monitors()
+                new_ids = {m["device_id"] for m in new_monitors}
+                if new_ids != old_ids:
+                    print(f"[DDC] Display topology change detected! Current monitors: {len(new_monitors)}")
+                    if mqtt_mgr and mqtt_mgr.connected:
+                        mqtt_mgr.publish_discovery()
+                        mqtt_mgr.publish_states()
+
             for mon in manager.monitors:
                 disp_id = mon["display"]
                 new_in = manager.get_vcp(disp_id, 0x60)
@@ -858,26 +812,73 @@ def poll_loop():
                 new_contrast = manager.get_vcp(disp_id, 0x12)
                 if new_contrast is not None:
                     mon["contrast"] = new_contrast
-                if mon["has_audio"]:
+                if mon.get("has_audio"):
                     new_vol = manager.get_vcp(disp_id, 0x62)
                     if new_vol is not None:
                         mon["volume"] = new_vol
-                if mon["has_mute"]:
+                if mon.get("has_mute"):
                     new_mute_val = manager.get_vcp(disp_id, 0x8D)
                     if new_mute_val is not None:
                         mon["mute"] = (new_mute_val == 1)
                 if mqtt_mgr:
                     mqtt_mgr.publish_states(mon)
         except Exception as e:
-            print(f"[DDC] Poll error: {e}", file=sys.stderr, flush=True)
+            print(f"[DDC] Poll error: {e}", file=sys.stderr)
+
+
+def resolve_mqtt_credentials():
+    host = MQTT_HOST
+    port = MQTT_PORT
+    user = ""
+    password = ""
+
+    # 1. Check if user configured manual credentials in options.json
+    if os.path.exists(OPTIONS_FILE):
+        try:
+            with open(OPTIONS_FILE, "r") as f:
+                opts = json.load(f)
+                user = opts.get("mqtt_username", "").strip()
+                password = opts.get("mqtt_password", "").strip()
+                if user and password:
+                    print(f"[DDC] Using manually configured MQTT credentials for user '{user}'")
+                    return host, port, user, password
+        except Exception as e:
+            print(f"[DDC] Error reading options.json for MQTT: {e}", file=sys.stderr)
+
+    # 2. Try fetching from Home Assistant Supervisor API
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    if token:
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                "http://supervisor/services/mqtt",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    svc = data.get("data", {})
+                    host = svc.get("host", host)
+                    port = int(svc.get("port", port))
+                    user = svc.get("username", "")
+                    password = svc.get("password", "")
+                    print(f"[DDC] Auto-discovered Mosquitto MQTT credentials from Supervisor for '{user}'")
+                    return host, port, user, password
+        except Exception as e:
+            print(f"[DDC] Supervisor MQTT auto-discovery failed: {e}", file=sys.stderr)
+
+    # 3. Default fallback to environment variables
+    user = os.environ.get("MQTT_USER", user)
+    password = os.environ.get("MQTT_PASSWORD", password)
+    return host, port, user, password
 
 
 def main():
     global mqtt_mgr
-    print("[DDC] Initializing Generic DDC/CI Monitor Service...", flush=True)
+    print("[DDC] Initializing Generic DDC/CI Monitor Service...")
     monitors = manager.detect_monitors()
     if not monitors:
-        print("[DDC] Note: No DDC-capable monitors detected right now. Will remain active for hotplug/REST.", file=sys.stderr, flush=True)
+        print("[DDC] Note: No DDC-capable monitors detected right now. Will remain active for hotplug/REST.", file=sys.stderr)
 
     if ENABLE_MQTT:
         mqtt_mgr = MQTTClientManager(manager)
@@ -887,12 +888,12 @@ def main():
     poll_thread.start()
 
     server = HTTPServer(("0.0.0.0", DDC_PORT), DDCRequestHandler)
-    print(f"[DDC] REST API Server listening on 0.0.0.0:{DDC_PORT}", flush=True)
+    print(f"[DDC] REST API Server listening on 0.0.0.0:{DDC_PORT}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
-    print("[DDC] Service stopped.", flush=True)
+    print("[DDC] Service stopped.")
 
 
 if __name__ == "__main__":

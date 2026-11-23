@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.5] - 2026-11-23
+
+### Added
+- **Dynamic Hotplug Rescan & Auto-Discovery on Monitor Power-On**:
+  - The background DDC polling thread now automatically detects when 0 displays are active (e.g. when the monitor was powered off during container startup) and actively rescans `ddcutil detect` every polling cycle until displays are found.
+  - Also performs an automated topology check every 5 poll intervals (~5 min) to discover hotplugged or newly powered-on monitors.
+  - When power is restored to a monitor (such as turning on the EcoFlow / power strip), the service immediately detects the display (e.g., `ASUS VA34VCPSR`), logs the discovery, and instantly auto-publishes all Home Assistant MQTT Discovery entities (`select`, `number`, `switch`, `button`) without requiring an add-on restart.
+- **Dedicated REST API Rescan Endpoints**:
+  - Added `GET /rescan` and `GET /detect` on port `6743` (`http://<ha-ip>:6743/rescan`) allowing users or Home Assistant automations to trigger an immediate, synchronous hardware bus rescan on demand.
+
+### Fixed
+- **Empty Displays Mutex State**: Corrected `detect_monitors()` to update and lock `manager.monitors` cleanly when zero displays are reported by `ddcutil`, preventing stale display state caching.
+
+---
+
 ## [1.1.4] - 2026-11-23
 
 ### Fixed
@@ -52,6 +67,7 @@ All notable changes to this project will be documented in this file.
       - `button.<vendor>_<model>_monitor_switch_to_<input>` (e.g. `button.asus_va34vcpsr_monitor_switch_to_hdmi_1`)
   - **Embedded High-Performance REST API (`port 6743`)**:
     - `GET /displays`: Full JSON diagnostics of detected displays, current inputs, volume, and capabilities.
+    - `GET /rescan`: Immediate synchronous hardware bus rescan and hotplug discovery.
     - `GET /input?to=<source>`: Instant input switching (accepts `HDMI-1`, `USB-C`, `DisplayPort-1`, `work`, `windows`, `haos`, or hex `0x11`).
     - `GET /volume?set=<0-100>`: Set hardware speaker volume.
     - `GET /mute?set=<on|off>`: Toggle hardware audio mute.
