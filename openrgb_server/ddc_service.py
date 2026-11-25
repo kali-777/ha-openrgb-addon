@@ -353,6 +353,7 @@ class MQTTClientManager:
         self.mgr = monitor_mgr
         self.client = None
         self.connected = False
+        self.known_device_ids = set()
 
     def start(self):
         try:
@@ -369,6 +370,7 @@ class MQTTClientManager:
             if code == 0:
                 print("[DDC] Connected successfully to MQTT broker. Publishing HA Discovery...")
                 self.connected = True
+                self.client.subscribe("ha_openrgb/ddc/rescan")
                 self.publish_discovery()
                 self.publish_states()
             else:
@@ -379,6 +381,13 @@ class MQTTClientManager:
                 topic = msg.topic
                 payload = msg.payload.decode("utf-8").strip()
                 print(f"[DDC] MQTT message received: {topic} -> {payload}")
+
+                if topic == "ha_openrgb/ddc/rescan":
+                    print("[DDC] MQTT rescan requested via ha_openrgb/ddc/rescan...")
+                    self.mgr.detect_monitors()
+                    self.publish_discovery()
+                    self.publish_states()
+                    return
                 parts = topic.split("/")
                 if len(parts) >= 5 and parts[0] == "ha_openrgb" and parts[1] == "ddc":
                     dev_id = parts[2]
@@ -464,6 +473,24 @@ class MQTTClientManager:
                 "serial_number": mon["serial"],
             }
 
+            avail_topic = f"ha_openrgb/ddc/{dev_id}/availability"
+            self.known_device_ids.add(dev_id)
+
+            # 0. Connectivity Binary Sensor Entity
+            status_disc_topic = f"homeassistant/binary_sensor/{dev_id}_status/config"
+            status_config = {
+                "name": "Status",
+                "has_entity_name": True,
+                "object_id": f"{prefix}_status",
+                "unique_id": f"{dev_id}_status",
+                "device": device_info,
+                "device_class": "connectivity",
+                "state_topic": avail_topic,
+                "payload_on": "online",
+                "payload_off": "offline",
+            }
+            self.client.publish(status_disc_topic, json.dumps(status_config), retain=True)
+
             # 1. Input Source Select Entity
             input_disc_topic = f"homeassistant/select/{dev_id}_input/config"
             input_config = {
@@ -476,6 +503,9 @@ class MQTTClientManager:
                 "options": mon["input_options"],
                 "state_topic": f"ha_openrgb/ddc/{dev_id}/input/state",
                 "command_topic": f"ha_openrgb/ddc/{dev_id}/input/set",
+                "availability_topic": avail_topic,
+                "payload_available": "online",
+                "payload_not_available": "offline",
             }
             self.client.publish(input_disc_topic, json.dumps(input_config), retain=True)
 
@@ -493,6 +523,9 @@ class MQTTClientManager:
                 "step": 1,
                 "state_topic": f"ha_openrgb/ddc/{dev_id}/brightness/state",
                 "command_topic": f"ha_openrgb/ddc/{dev_id}/brightness/set",
+                "availability_topic": avail_topic,
+                "payload_available": "online",
+                "payload_not_available": "offline",
             }
             self.client.publish(bright_disc_topic, json.dumps(bright_config), retain=True)
 
@@ -510,6 +543,9 @@ class MQTTClientManager:
                 "step": 1,
                 "state_topic": f"ha_openrgb/ddc/{dev_id}/contrast/state",
                 "command_topic": f"ha_openrgb/ddc/{dev_id}/contrast/set",
+                "availability_topic": avail_topic,
+                "payload_available": "online",
+                "payload_not_available": "offline",
             }
             self.client.publish(contrast_disc_topic, json.dumps(contrast_config), retain=True)
 
@@ -528,6 +564,9 @@ class MQTTClientManager:
                     "step": 1,
                     "state_topic": f"ha_openrgb/ddc/{dev_id}/volume/state",
                     "command_topic": f"ha_openrgb/ddc/{dev_id}/volume/set",
+                    "availability_topic": avail_topic,
+                    "payload_available": "online",
+                    "payload_not_available": "offline",
                 }
                 self.client.publish(vol_disc_topic, json.dumps(vol_config), retain=True)
 
@@ -543,6 +582,9 @@ class MQTTClientManager:
                     "icon": "mdi:volume-mute",
                     "state_topic": f"ha_openrgb/ddc/{dev_id}/mute/state",
                     "command_topic": f"ha_openrgb/ddc/{dev_id}/mute/set",
+                    "availability_topic": avail_topic,
+                    "payload_available": "online",
+                    "payload_not_available": "offline",
                 }
                 self.client.publish(mute_disc_topic, json.dumps(mute_config), retain=True)
 
@@ -559,6 +601,9 @@ class MQTTClientManager:
                     "icon": "mdi:monitor-arrow-down",
                     "command_topic": f"ha_openrgb/ddc/{dev_id}/input/set",
                     "payload_press": opt,
+                    "availability_topic": avail_topic,
+                    "payload_available": "online",
+                    "payload_not_available": "offline",
                 }
                 self.client.publish(btn_disc_topic, json.dumps(btn_config), retain=True)
 
@@ -582,11 +627,20 @@ class MQTTClientManager:
         if not self.connected or not self.client:
             return
 
+        current_dev_ids = {m["device_id"] for m in self.mgr.monitors}
+        # Publish offline for any previously known monitor that is no longer detected
+        for old_id in self.known_device_ids:
+            if old_id not in current_dev_ids:
+                print(f"[DDC] Monitor {old_id} is disconnected. Publishing offline availability...")
+                self.client.publish(f"ha_openrgb/ddc/{old_id}/availability", "offline", retain=True)
+
         monitors = [target_mon] if target_mon else self.mgr.monitors
         for mon in monitors:
             if not mon:
                 continue
             dev_id = mon["device_id"]
+            self.known_device_ids.add(dev_id)
+            self.client.publish(f"ha_openrgb/ddc/{dev_id}/availability", "online", retain=True)
             if mon.get("current_input_name"):
                 self.client.publish(f"ha_openrgb/ddc/{dev_id}/input/state", mon["current_input_name"], retain=True)
             if mon.get("brightness") is not None:
