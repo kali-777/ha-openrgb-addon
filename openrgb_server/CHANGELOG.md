@@ -2,7 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.3.2] - 2026-11-27
+## [1.3.3] - 2026-11-27
+
+### Fixed
+- **Stable `ddcutil 1.4.1` on `debian:sid-slim`**:
+  - Replaced buggy `ddcutil 2.x` with stable `ddcutil 1.4.1-1` from Debian Bookworm pool.
+  - Native official OpenRGB installed via Debian Sid apt repository.
+  - Resolves Alder Lake-N DisplayPort AUX hang and `openrgb: command not found`.
 
 ### Fixed
 - **Debian Bookworm Base with APT-Pinned OpenRGB from Trixie**:

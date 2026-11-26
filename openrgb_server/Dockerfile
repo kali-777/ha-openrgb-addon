@@ -1,25 +1,30 @@
-FROM debian:bookworm-slim
+FROM debian:sid-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     QT_QPA_PLATFORM=offscreen \
     LANG=C.UTF-8
 
-RUN echo "deb http://deb.debian.org/debian trixie main" > /etc/apt/sources.list.d/trixie.list \
-    && printf "Package: *\nPin: release n=bookworm\nPin-Priority: 900\n\nPackage: openrgb*\nPin: release n=trixie\nPin-Priority: 990\n" > /etc/apt/preferences.d/openrgb \
-    && apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     openrgb \
-    ddcutil \
     python3 \
     python3-paho-mqtt \
     jq \
     usbutils \
     i2c-tools \
     udev \
-    libhidapi-hidraw0 \
-    libhidapi-libusb0 \
-    libusb-1.0-0 \
     ca-certificates \
-    bash \
+    curl \
+    kmod \
+    libdrm2 \
+    libglib2.0-0t64 \
+    libgudev-1.0-0 \
+    libusb-1.0-0 \
+    libxrandr2 \
+    && ARCH="$(dpkg --print-architecture)" \
+    && curl -fsSL -o /tmp/libddcutil.deb "http://deb.debian.org/debian/pool/main/d/ddcutil/libddcutil4_1.4.1-1_${ARCH}.deb" \
+    && curl -fsSL -o /tmp/ddcutil.deb "http://deb.debian.org/debian/pool/main/d/ddcutil/ddcutil_1.4.1-1_${ARCH}.deb" \
+    && (dpkg -i /tmp/libddcutil.deb /tmp/ddcutil.deb || apt-get install -y --fix-broken --no-install-recommends) \
+    && rm -f /tmp/libddcutil.deb /tmp/ddcutil.deb \
     && mkdir -p /etc/udev/rules.d \
     && if [ -f /usr/lib/udev/rules.d/60-openrgb.rules ]; then \
          mv /usr/lib/udev/rules.d/60-openrgb.rules /etc/udev/rules.d/60-openrgb.rules; \
