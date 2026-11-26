@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.8] - 2026-11-27
+
+### Fixed
+- **Bypass Cross-Instance Device Locks (`--disable-cross-instance-locks`)**:
+  - Embedded `--disable-cross-instance-locks` globally across all `ddcutil` command invocations, eliminating `flock_lock_by_fd Max wait time exceeded after 32 flock() calls` collisions on `/dev/i2c-*`.
+  - Replaced high-concurrency 12-thread scan with targeted fast-path probing of primary DisplayPort bus (`/dev/i2c-11`) and secondary bus (`/dev/i2c-10`), eliminating bus contention.
+  - REST API server on port 6743 now starts immediately on service launch in a background thread so direct control and `/diag` endpoints are accessible instantly from second 1.
+
+---
+
 ## [1.2.7] - 2026-11-27
 
 ### Fixed

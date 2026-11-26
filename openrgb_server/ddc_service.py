@@ -109,8 +109,8 @@ INPUT_NAME_TO_HEX.update({
 
 
 def run_ddcutil(*args, timeout=15):
-    # Pass --sleep-multiplier 2 before the subcommand for DP AUX stability on Intel Alder Lake-N
-    cmd = ["ddcutil"]
+    # Pass --disable-cross-instance-locks and --sleep-multiplier 2 for DP AUX stability and to prevent flock timeouts
+    cmd = ["ddcutil", "--disable-cross-instance-locks"]
     if "--sleep-multiplier" not in args:
         cmd.extend(["--sleep-multiplier", "2"])
     cmd.extend(list(args))
@@ -172,43 +172,38 @@ class MonitorManager:
                 self.active_bus = b_num
                 raw_outputs.append(out)
 
-        # 1. Parallel per-bus probe across all /dev/i2c-* (reverse order: display buses 11, 10 first)
+        # 1. Check secondary display bus 10
+        if not raw_outputs and target_first != 10 and os.path.exists("/dev/i2c-10"):
+            print("[DDC] Checking secondary DisplayPort bus /dev/i2c-10 directly...")
+            b_num, out = self.probe_bus(10)
+            if out:
+                print(f"[DDC] Found active monitor on secondary display bus {b_num}!")
+                self.active_bus = b_num
+                raw_outputs.append(out)
+
+        # 2. Sequential fallback across remaining buses if neither 11 nor 10 hit
         if not raw_outputs:
             i2c_devs = sorted(glob.glob("/dev/i2c-*"))
             bus_nums = []
             for dev in i2c_devs:
                 m = re.search(r"/dev/i2c-(\d+)", dev)
                 if m:
-                    bus_nums.append(int(m.group(1)))
+                    b = int(m.group(1))
+                    if b not in (11, 10):
+                        bus_nums.append(b)
 
-            if not bus_nums:
-                bus_nums = list(range(12))
-
-            # Display buses on Intel Alder Lake-N are higher numbered (e.g. 11, 10)
-            bus_nums = sorted(bus_nums, reverse=True)
-
-            print(f"[DDC] Scanning {len(bus_nums)} I2C buses in parallel for displays (prioritizing display buses)...")
-            with ThreadPoolExecutor(max_workers=min(len(bus_nums), 12)) as executor:
-                futures = {executor.submit(self.probe_bus, b): b for b in bus_nums}
-                for f in as_completed(futures):
-                    b_num, out = f.result()
-                    if out:
-                        print(f"[DDC] Found active monitor on I2C bus {b_num}!")
-                        self.active_bus = b_num
-                        raw_outputs.append(out)
-                        break
-
-        # 2. Fallback: Try ddcutil --async detect
-        if not raw_outputs:
-            print("[DDC] Parallel bus scan did not hit, trying ddcutil --async detect (40s)...")
-            code, out, _ = run_ddcutil("--async", "detect", timeout=40)
-            if out and "Display" in out:
-                raw_outputs.append(out)
+            for b in sorted(bus_nums, reverse=True):
+                b_num, out = self.probe_bus(b)
+                if out:
+                    print(f"[DDC] Found active monitor on I2C bus {b_num}!")
+                    self.active_bus = b_num
+                    raw_outputs.append(out)
+                    break
 
         # 3. Final fallback: standard detect
         if not raw_outputs:
-            print("[DDC] Falling back to standard ddcutil detect (60s)...")
-            code, out, err = run_ddcutil("detect", timeout=60)
+            print("[DDC] Falling back to standard ddcutil detect (30s)...")
+            code, out, err = run_ddcutil("detect", timeout=30)
             if out and "Display" in out:
                 raw_outputs.append(out)
 
@@ -1076,24 +1071,27 @@ def resolve_mqtt_credentials():
 def main():
     global mqtt_mgr
     print("[DDC] Initializing Generic DDC/CI Monitor Service...")
-    monitors = manager.detect_monitors()
-    if not monitors:
-        print("[DDC] Note: No DDC-capable monitors detected right now. Will remain active for hotplug/REST.", file=sys.stderr)
+
+    # Start REST API server immediately so port 6743 is always responsive from second 1
+    server = HTTPServer(("0.0.0.0", DDC_PORT), DDCRequestHandler)
+    print(f"[DDC] REST API Server listening on 0.0.0.0:{DDC_PORT}")
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
 
     if ENABLE_MQTT:
         mqtt_mgr = MQTTClientManager(manager)
         mqtt_mgr.start()
 
-    poll_thread = threading.Thread(target=poll_loop, daemon=True)
-    poll_thread.start()
+    # Initial monitor detection (fast path on bus 11)
+    monitors = manager.detect_monitors()
+    if not monitors:
+        print("[DDC] Note: No DDC-capable monitors detected right now. Will remain active for hotplug/REST.", file=sys.stderr)
+    elif mqtt_mgr and mqtt_mgr.connected:
+        mqtt_mgr.publish_discovery()
+        mqtt_mgr.publish_states()
 
-    server = HTTPServer(("0.0.0.0", DDC_PORT), DDCRequestHandler)
-    print(f"[DDC] REST API Server listening on 0.0.0.0:{DDC_PORT}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    print("[DDC] Service stopped.")
+    # Enter recurring background poll loop
+    poll_loop()
 
 
 if __name__ == "__main__":
