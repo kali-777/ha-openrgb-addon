@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.3] - 2026-11-26
+
+### Fixed
+- **Instant Parallel I2C Bus Probing & Sub-50ms DDC/CI Control**:
+  - Replaced sequential 12-bus scanning with high-concurrency async multi-bus probing (`ddcutil detect --async` and `ThreadPoolExecutor` across `/dev/i2c-*` with fast 4s timeout per bus).
+  - Eliminates the 45-second `Timeout waiting for ddcutil` on ASUS NUC 14 Essential Alder Lake-N motherboards caused by unresponsive SMBus/internal sensors.
+  - Automatically identifies and latches onto the physical display bus (`self.active_bus`), routing all subsequent MCCS `getvcp`, `setvcp`, and `capabilities` queries directly via `--bus <N>`.
+  - Bypasses non-display I2C bus scans entirely during active operation, reducing input source switching, brightness adjustment, volume changes, and mute toggles to sub-50ms latency.
+- **Accurate Real-Time Input Source Synchronization**:
+  - Automatically queries and updates `select.<vendor>_<model>_monitor_input_source` immediately upon bus discovery, resolving the issue where Home Assistant stayed stuck displaying stale states (such as `HDMI-1`) when physically displaying `DisplayPort-1` (Home Assistant OS).
+- **Startup Banner Version Alignment**:
+  - Corrected the hardcoded version string in `run.sh` to match the release version (`v1.2.3`), eliminating version reporting discrepancies in add-on container logs.
+
+---
+
 ## [1.2.2] - 2026-11-26
 
 ### Fixed
