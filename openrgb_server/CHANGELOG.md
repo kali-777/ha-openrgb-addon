@@ -2,7 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.2.5] - 2026-11-27
+## [1.2.7] - 2026-11-27
+
+### Fixed
+- **DisplayPort AUX Stability with `--sleep-multiplier 2`**:
+  - Embedded `--sleep-multiplier 2` globally across all `ddcutil` command invocations, providing essential timing stability for Intel Alder Lake-N (`drm_dp_i2c_do_msg` / DP AUX) and ASUS monitor scalers.
+  - Added dedicated fast-path check directly targeting primary DisplayPort bus (`/dev/i2c-11`), eliminating unnecessary scans of motherboard SMBus channels.
+  - Increased per-bus probe timeout to 9s to ensure MCCS queries complete without timeout.
+  - Added dynamic `timeout` parameter to `/diag` endpoint (default 25s).
+
+---
+
+## [1.2.6] - 2026-11-27
 
 ### Fixed
 - **ddcutil CLI Syntax & Option Ordering Correction**:

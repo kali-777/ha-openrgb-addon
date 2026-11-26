@@ -108,8 +108,12 @@ INPUT_NAME_TO_HEX.update({
 })
 
 
-def run_ddcutil(*args, timeout=12):
-    cmd = ["ddcutil"] + list(args)
+def run_ddcutil(*args, timeout=15):
+    # Pass --sleep-multiplier 2 before the subcommand for DP AUX stability on Intel Alder Lake-N
+    cmd = ["ddcutil"]
+    if "--sleep-multiplier" not in args:
+        cmd.extend(["--sleep-multiplier", "2"])
+    cmd.extend(list(args))
     try:
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
         return res.returncode, res.stdout, res.stderr
@@ -130,17 +134,17 @@ class MonitorManager:
         self.lock = threading.Lock()
 
     def probe_bus(self, bus_num):
-        """Probes a single I2C bus directly (4s timeout) using correct ddcutil CLI option ordering."""
+        """Probes a single I2C bus directly (9s timeout) using correct ddcutil CLI option ordering."""
         # Method 1: Query Input Source (VCP 60) or Brightness (VCP 10)
-        code, out, _ = run_ddcutil("--bus", str(bus_num), "getvcp", "60", "--terse", timeout=4)
+        code, out, _ = run_ddcutil("--bus", str(bus_num), "getvcp", "60", timeout=9)
         if code != 0:
-            code, out, _ = run_ddcutil("--bus", str(bus_num), "getvcp", "10", "--terse", timeout=4)
+            code, out, _ = run_ddcutil("--bus", str(bus_num), "getvcp", "10", timeout=9)
         if code != 0:
-            code, out, _ = run_ddcutil("--bus", str(bus_num), "getvcp", "60", timeout=4)
+            code, out, _ = run_ddcutil("--bus", str(bus_num), "getvcp", "60", "--terse", timeout=9)
 
         if code == 0 and out and ("VCP" in out or "x" in out or "sl=" in out):
             print(f"[DDC] I2C bus {bus_num} responded to VCP query!")
-            c2, out2, _ = run_ddcutil("--bus", str(bus_num), "capabilities", timeout=6)
+            c2, out2, _ = run_ddcutil("--bus", str(bus_num), "capabilities", timeout=12)
             model = "VA34VCPSR"
             mfg = "AUS"
             if out2:
@@ -158,10 +162,14 @@ class MonitorManager:
         monitors = []
         raw_outputs = []
 
-        # 0. Fast Path: If we already know the active display bus, probe that bus first (sub-second fast path)
-        if self.active_bus is not None:
-            _, out = self.probe_bus(self.active_bus)
+        # 0. Fast Path: Check active_bus or primary DisplayPort bus 11 (Intel Alder Lake-N DP AUX)
+        target_first = self.active_bus if self.active_bus is not None else 11
+        if os.path.exists(f"/dev/i2c-{target_first}"):
+            print(f"[DDC] Checking primary DisplayPort bus /dev/i2c-{target_first} directly...")
+            b_num, out = self.probe_bus(target_first)
             if out:
+                print(f"[DDC] Successfully detected monitor on primary DisplayPort bus {b_num}!")
+                self.active_bus = b_num
                 raw_outputs.append(out)
 
         # 1. Parallel per-bus probe across all /dev/i2c-* (reverse order: display buses 11, 10 first)
@@ -192,15 +200,15 @@ class MonitorManager:
 
         # 2. Fallback: Try ddcutil --async detect
         if not raw_outputs:
-            print("[DDC] Parallel bus scan did not hit, trying ddcutil --async detect (30s)...")
-            code, out, _ = run_ddcutil("--async", "detect", timeout=30)
+            print("[DDC] Parallel bus scan did not hit, trying ddcutil --async detect (40s)...")
+            code, out, _ = run_ddcutil("--async", "detect", timeout=40)
             if out and "Display" in out:
                 raw_outputs.append(out)
 
         # 3. Final fallback: standard detect
         if not raw_outputs:
-            print("[DDC] Falling back to standard ddcutil detect (45s)...")
-            code, out, err = run_ddcutil("detect", timeout=45)
+            print("[DDC] Falling back to standard ddcutil detect (60s)...")
+            code, out, err = run_ddcutil("detect", timeout=60)
             if out and "Display" in out:
                 raw_outputs.append(out)
 
@@ -783,6 +791,10 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
         if path == "/diag":
             bus_arg = params.get("bus", [None])[0]
             cmd_arg = params.get("cmd", [None])[0]
+            try:
+                timeout_arg = int(params.get("timeout", [25])[0])
+            except ValueError:
+                timeout_arg = 25
             if cmd_arg:
                 args = cmd_arg.split()
             elif bus_arg is not None:
@@ -791,7 +803,7 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
                 args = ["--bus", str(manager.active_bus), "getvcp", "60", "--verbose"]
             else:
                 args = ["--bus", "11", "getvcp", "60", "--verbose"]
-            c_code, c_out, c_err = run_ddcutil(*args, timeout=10)
+            c_code, c_out, c_err = run_ddcutil(*args, timeout=timeout_arg)
             self.send_json(200, {
                 "args": args,
                 "returncode": c_code,
