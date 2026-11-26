@@ -20,6 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgudev-1.0-0 \
     libusb-1.0-0 \
     libxrandr2 \
+    iproute2 \
+    iputils-ping \
     && ARCH="$(dpkg --print-architecture)" \
     && curl -fsSL -o /tmp/libddcutil.deb "http://deb.debian.org/debian/pool/main/d/ddcutil/libddcutil4_1.4.1-1_${ARCH}.deb" \
     && curl -fsSL -o /tmp/ddcutil.deb "http://deb.debian.org/debian/pool/main/d/ddcutil/ddcutil_1.4.1-1_${ARCH}.deb" \
@@ -36,8 +38,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY ddc_service.py /ddc_service.py
+COPY ghost_responder.py /ghost_responder.py
 COPY run.sh /run.sh
-RUN chmod a+x /run.sh /ddc_service.py
+RUN chmod a+x /run.sh /ddc_service.py /ghost_responder.py
 
 WORKDIR /config
 

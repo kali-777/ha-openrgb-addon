@@ -4,6 +4,7 @@ set -e
 OPTIONS_FILE="/data/options.json"
 CONFIG_DIR="/config/OpenRGB"
 CONFIG_FILE="${CONFIG_DIR}/OpenRGB.json"
+GHOST_FILE="${CONFIG_DIR}/ghost_devices.json"
 
 mkdir -p "${CONFIG_DIR}" /etc/udev/rules.d
 
@@ -21,9 +22,13 @@ EXTRA_ARGS=$(jq -r '.extra_args // ""' "${OPTIONS_FILE}")
 ENABLE_DDC=$(jq -r '.enable_ddc // true' "${OPTIONS_FILE}")
 
 DDC_PID=""
+GHOST_PID=""
 
 cleanup() {
     echo "Stopping background services..."
+    if [ -n "${GHOST_PID}" ]; then
+        kill "${GHOST_PID}" 2>/dev/null || true
+    fi
     if [ -n "${DDC_PID}" ]; then
         kill "${DDC_PID}" 2>/dev/null || true
     fi
@@ -31,7 +36,7 @@ cleanup() {
 trap cleanup EXIT SIGINT SIGTERM
 
 echo "=================================================================="
-echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.3.4)"
+echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.4.0)"
 echo "=================================================================="
 echo "OpenRGB Version : $(openrgb --version 2>/dev/null | head -n 1 || echo 'OpenRGB 1.0+')"
 echo "Bind Address    : ${SERVER_HOST}:${SERVER_PORT}"
@@ -53,9 +58,9 @@ if [ ! -f "${CONFIG_FILE}" ]; then
     echo "{}" > "${CONFIG_FILE}"
 fi
 
-# Pre-flight reachability probe & automated model discovery for smart lights
-echo "Checking network smart lights reachability..."
-python3 - <<'EOF' "${OPTIONS_FILE}" "${CONFIG_FILE}" "${WIZ_WHITE_STRATEGY}"
+# Pre-flight reachability probe & persistent ID ghost responder preparation
+echo "Checking network smart lights reachability & preparing persistent IDs..."
+python3 - <<'EOF' "${OPTIONS_FILE}" "${CONFIG_FILE}" "${CONFIG_DIR}" "${WIZ_WHITE_STRATEGY}"
 import json
 import os
 import socket
@@ -65,7 +70,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 opts_file = sys.argv[1]
 cfg_file = sys.argv[2]
-wiz_strategy = sys.argv[3]
+config_dir = sys.argv[3]
+wiz_strategy = sys.argv[4]
+
+cache_file = os.path.join(config_dir, "device_cache.json")
+ghost_file = os.path.join(config_dir, "ghost_devices.json")
 
 with open(opts_file, "r") as f:
     opts = json.load(f)
@@ -101,7 +110,27 @@ WIZ_MODEL_NAMES = {
     "STRIP": "Philips WiZ Lightstrip (RGB)",
 }
 
-def ping_check(ip, count=5, timeout=4):
+# Seed known persistent Goa Home hardware signatures
+cache = {
+    "192.168.2.65": {"type": "wiz", "model": "DMORGB", "mac": "9877d5421304", "moduleName": "ESP25_DMORGB_31", "fwVersion": "1.39.2"},
+    "192.168.2.56": {"type": "wiz", "model": "SHRGB", "mac": "d8a011f84f49", "moduleName": "ESP25_SHRGB_01", "fwVersion": "1.38.0"},
+    "192.168.2.57": {"type": "wiz", "model": "DHRGB", "mac": "9877d5864a8e", "moduleName": "ESP25_DHRGB_01", "fwVersion": "1.39.2"},
+    "192.168.2.51": {"type": "yeelight", "model": "stripe", "name": "Yeelight Light Strip Plus"},
+    "192.168.2.52": {"type": "yeelight", "model": "color", "name": "Mi LED Smart Bulb Color"},
+    "192.168.2.53": {"type": "yeelight", "model": "color", "name": "Mi LED Smart Bulb Color"},
+    "192.168.2.54": {"type": "yeelight", "model": "bslamp1", "name": "Mi Bedside Lamp 1"},
+}
+
+if os.path.exists(cache_file):
+    try:
+        with open(cache_file, "r") as f:
+            disk_cache = json.load(f)
+            if isinstance(disk_cache, dict):
+                cache.update(disk_cache)
+    except Exception:
+        pass
+
+def ping_check(ip, count=4, timeout=3):
     try:
         res = subprocess.run(["ping", "-c", str(count), "-W", str(timeout), ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return res.returncode == 0
@@ -109,16 +138,13 @@ def ping_check(ip, count=5, timeout=4):
         return False
 
 def probe_wiz(ip):
-    # 1. Multi-attempt UDP query (port 38899) with model & telemetry discovery
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.settimeout(3.0)
-            # Query getSystemConfig for hardware module and firmware version
+            s.settimeout(2.5)
             s.sendto(b'{"method":"getSystemConfig","params":{}}', (ip, 38899))
             sys_data, _ = s.recvfrom(2048)
             
-            # Query getPilot for signal strength and current state
             rssi = None
             try:
                 s.sendto(b'{"method":"getPilot","params":{}}', (ip, 38899))
@@ -137,7 +163,6 @@ def probe_wiz(ip):
                 fw = res.get("fwVersion", "")
                 mac = res.get("mac", "")
                 
-                # Parse model identifier from moduleName (e.g. ESP25_DMORGB_31 -> DMORGB)
                 raw_model = mod_name
                 parts = mod_name.split("_")
                 if len(parts) >= 2:
@@ -157,93 +182,102 @@ def probe_wiz(ip):
                     info_parts.append(f"MAC: {mac}")
                 
                 extra = f"{info_parts[0]} ({', '.join(info_parts[1:])})" if len(info_parts) > 1 else info_parts[0]
-                return (ip, True, extra)
+                return (ip, True, extra, {"type": "wiz", "model": raw_model, "mac": mac, "moduleName": mod_name, "fwVersion": fw})
         except Exception:
             pass
 
-    # 2. Fallback to getPilot only if getSystemConfig was missed
-    for attempt in range(2):
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.settimeout(3.0)
-            s.sendto(b'{"method":"getPilot","params":{}}', (ip, 38899))
-            pilot_data, _ = s.recvfrom(1024)
-            s.close()
-            if pilot_data:
-                p_res = json.loads(pilot_data.decode("utf-8")).get("result", {})
-                rssi = p_res.get("rssi")
-                mac = p_res.get("mac")
-                extra = f"Philips WiZ (RSSI: {rssi} dBm, MAC: {mac})" if rssi is not None else "Philips WiZ"
-                return (ip, True, extra)
-        except Exception:
-            pass
-
-    # 3. Multi-packet ICMP ping fallback (5 packets, 4s timeout)
-    if ping_check(ip, count=5, timeout=4):
-        return (ip, True, "Philips WiZ (Ping responsive)")
-    return (ip, False, "Host unreachable / offline (UDP & ICMP timed out)")
+    if ping_check(ip, count=3, timeout=2):
+        return (ip, True, "Philips WiZ (Ping responsive)", {})
+    return (ip, False, "Offline / wall switch turned off", {})
 
 def probe_yeelight(ip):
-    # 1. Test TCP connect to port 55443 (3.5s timeout) and discover hardware model
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(3.5)
+    s.settimeout(2.5)
     try:
         s.connect((ip, 55443))
-        model_info = ""
+        d_name, d_model = "", "color"
         try:
             cmd = json.dumps({"id": 1, "method": "get_prop", "params": ["name", "model"]}) + "\r\n"
             s.sendall(cmd.encode("utf-8"))
             resp = json.loads(s.recv(1024).decode("utf-8"))
             if "result" in resp and len(resp["result"]) >= 2:
                 d_name, d_model = resp["result"][0], resp["result"][1]
-                friendly = YEELIGHT_MODEL_NAMES.get(d_model, d_model)
-                model_info = f"{friendly} (model: {d_model})"
-                if d_name:
-                    model_info = f"{d_name} - {model_info}"
         except Exception:
             pass
         s.close()
-        return (ip, True, model_info)
-    except ConnectionRefusedError:
-        return (ip, False, "Connection refused on port 55443 — LAN Control is disabled in Yeelight app")
-    except socket.timeout:
-        return (ip, False, "TCP port 55443 timed out — verify device power and LAN Control in Yeelight app")
-    except Exception as e:
-        err_msg = str(e).lower()
-        if "refused" in err_msg:
-            return (ip, False, "Connection refused on port 55443 — LAN Control is disabled in Yeelight app")
-        elif "timed out" in err_msg or "timeout" in err_msg:
-            return (ip, False, "TCP port 55443 timed out — verify device power and LAN Control in Yeelight app")
-        return (ip, False, f"TCP 55443 error: {e}")
+        friendly = YEELIGHT_MODEL_NAMES.get(d_model, d_model)
+        model_info = f"{friendly} (model: {d_model})"
+        if d_name:
+            model_info = f"{d_name} - {model_info}"
+        return (ip, True, model_info, {"type": "yeelight", "model": d_model, "name": d_name or friendly})
+    except Exception:
+        return (ip, False, "Offline / wall switch turned off", {})
 
 def probe_kasa(ip):
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(3.0)
+        s.settimeout(2.5)
         s.connect((ip, 9999))
         s.close()
-        return (ip, True, "Kasa Connected")
+        return (ip, True, "Kasa Connected", {})
     except Exception:
         pass
-    if ping_check(ip, count=5, timeout=4):
-        return (ip, True, "Ping responsive")
-    return (ip, False, "Host unreachable / offline")
+    if ping_check(ip, count=3, timeout=2):
+        return (ip, True, "Ping responsive", {})
+    return (ip, False, "Host unreachable / offline", {})
 
-def run_probes(ip_list, probe_fn, dev_type):
-    with ThreadPoolExecutor(max_workers=10) as ex:
-        results = list(ex.map(probe_fn, ip_list))
-    online = []
-    for ip, ok, extra in results:
-        if ok:
-            online.append((ip, extra))
-        else:
-            print(f"[OpenRGB] Safeguard: {dev_type} {ip} is unavailable ({extra}); skipping from config to prevent 60s DetectionManager freeze.")
-    return online
+with ThreadPoolExecutor(max_workers=10) as ex:
+    wiz_results = list(ex.map(probe_wiz, wiz_raw))
+    yeelight_results = list(ex.map(probe_yeelight, yeelight_raw))
+    kasa_results = list(ex.map(probe_kasa, kasa_raw))
 
-online_wiz = run_probes(wiz_raw, probe_wiz, "Philips WiZ")
-online_yeelight = run_probes(yeelight_raw, probe_yeelight, "Xiaomi Yeelight")
-online_kasa = run_probes(kasa_raw, probe_kasa, "TP-Link Kasa")
+ghost_wiz = []
+ghost_yeelight = []
 
+# Process WiZ results
+for ip, ok, extra, dev_data in wiz_results:
+    if ok and dev_data:
+        cache[ip] = dev_data
+    elif not ok:
+        cached = cache.get(ip, {})
+        ghost_wiz.append({
+            "ip": ip,
+            "mac": cached.get("mac", "d8a011" + "".join(f"{int(o):02x}" for o in ip.split(".")[1:])),
+            "moduleName": cached.get("moduleName", "ESP25_SHRGB_01"),
+            "fwVersion": cached.get("fwVersion", "1.39.0")
+        })
+
+# Process Yeelight results
+for ip, ok, extra, dev_data in yeelight_results:
+    if ok and dev_data:
+        cache[ip] = dev_data
+    elif not ok:
+        cached = cache.get(ip, {})
+        ghost_yeelight.append({
+            "ip": ip,
+            "model": cached.get("model", "color"),
+            "name": cached.get("name", "Yeelight Device")
+        })
+
+# Save persistent cache
+try:
+    with open(cache_file, "w") as f:
+        json.dump(cache, f, indent=4)
+except Exception:
+    pass
+
+# Save ghost configuration for offline devices
+ghost_config = {
+    "wiz": ghost_wiz,
+    "yeelight": ghost_yeelight
+}
+try:
+    with open(ghost_file, "w") as f:
+        json.dump(ghost_config, f, indent=4)
+except Exception:
+    pass
+
+# Build OpenRGB.json with ALL configured IPs in their EXACT order
 cfg = {}
 if os.path.exists(cfg_file):
     try:
@@ -252,32 +286,32 @@ if os.path.exists(cfg_file):
     except Exception:
         cfg = {}
 
-if online_wiz:
+if wiz_raw:
     cfg["PhilipsWizDevices"] = {
         "devices": [{
             "ip": ip,
             "selected_white_strategy": wiz_strategy,
             "use_cool_white": False,
             "use_warm_white": False
-        } for ip, _ in online_wiz]
+        } for ip in wiz_raw]
     }
 else:
     cfg["PhilipsWizDevices"] = None
 
-if online_yeelight:
-    # Always enforce music_mode: false to prevent reverse-socket deadlock in Docker
+if yeelight_raw:
     cfg["YeelightDevices"] = {
         "devices": [{
             "ip": ip,
             "music_mode": False
-        } for ip, _ in online_yeelight]
+        } for ip in yeelight_raw]
     }
 else:
     cfg["YeelightDevices"] = None
 
+online_kasa = [ip for ip, ok, _, _ in kasa_results if ok]
 if online_kasa:
     cfg["KasaSmartDevices"] = {
-        "devices": [{"ip": ip} for ip, _ in online_kasa]
+        "devices": [{"ip": ip} for ip in online_kasa]
     }
 else:
     cfg["KasaSmartDevices"] = None
@@ -294,27 +328,41 @@ cfg["Detectors"]["detectors"]["HyperX QuadCast 2 S"] = True
 with open(cfg_file, "w") as f:
     json.dump(cfg, f, indent=4)
 
-if online_wiz:
-    print("Configured Online Philips WiZ Devices:")
-    for ip, extra in online_wiz:
-        print(f"  - {ip}: {extra if extra else 'Philips WiZ'}")
-else:
-    print("Configured Online Philips WiZ IPs : None")
+print("------------------------------------------------------------------")
+print(f"Configured Philips WiZ Devices ({len(wiz_raw)} configured):")
+for ip, ok, extra, _ in wiz_results:
+    if ok:
+        print(f"  - {ip}: {extra} [ONLINE]")
+    else:
+        cached = cache.get(ip, {})
+        m = cached.get('moduleName', 'WiZ Bulb')
+        print(f"  - {ip}: {m} [OFFLINE / WALL SWITCH OFF] -> Ghost Responder Active (ID preserved for LedFx)")
 
-if online_yeelight:
-    print("Configured Online Yeelight Devices:")
-    for ip, extra in online_yeelight:
-        print(f"  - {ip}: {extra if extra else 'Yeelight Device'}")
-else:
-    print("Configured Online Yeelight IPs    : None")
+print(f"Configured Xiaomi Yeelight Devices ({len(yeelight_raw)} configured):")
+for ip, ok, extra, _ in yeelight_results:
+    if ok:
+        print(f"  - {ip}: {extra} [ONLINE]")
+    else:
+        cached = cache.get(ip, {})
+        m = cached.get('name', 'Yeelight Device')
+        print(f"  - {ip}: {m} [OFFLINE / WALL SWITCH OFF] -> Ghost Responder Active (ID preserved for LedFx)")
 
-if online_kasa:
-    print("Configured Online Kasa Smart Devices:")
-    for ip, extra in online_kasa:
-        print(f"  - {ip}: {extra if extra else 'TP-Link Kasa'}")
-else:
-    print("Configured Online Kasa Smart IPs  : None")
+print("------------------------------------------------------------------")
 EOF
+
+# Start Ghost Responder daemon if any devices are offline to guarantee static OpenRGB IDs
+if [ -f "${GHOST_FILE}" ]; then
+    HAS_GHOSTS=$(jq '(.wiz | length) + (.yeelight | length)' "${GHOST_FILE}" 2>/dev/null || echo "0")
+    if [ "${HAS_GHOSTS}" -gt 0 ]; then
+        echo "Launching OpenRGB Ghost Responder to protect LedFx device IDs..."
+        python3 -u /ghost_responder.py &
+        GHOST_PID=$!
+        sleep 1
+        echo "Ghost Responder active (PID: ${GHOST_PID})"
+    else
+        echo "All network devices are online. Ghost Responder not needed."
+    fi
+fi
 
 echo "------------------------------------------------------------------"
 if [ "${LIST_DEVICES}" = "true" ]; then

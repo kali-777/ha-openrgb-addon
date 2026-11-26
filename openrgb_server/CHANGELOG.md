@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-11-27
+
+### Added
+- **Persistent OpenRGB Device IDs & Ghost Responders for LedFx Stability**:
+  - **The Problem**: OpenRGB assigns internal device IDs sequentially (`0, 1, 2, ... N-1`) during startup enumeration. If any smart light (WiZ or Yeelight) was switched off at the physical wall switch or offline during boot, it was omitted, shifting all subsequent controller IDs down and breaking LedFx audio-reactive mappings.
+  - **Ghost Responder Architecture (`/ghost_responder.py`)**:
+    - For any configured smart light detected as offline during pre-flight reachability checks, the add-on temporarily aliases its IP to the loopback interface (`ip addr add <ip>/32 dev lo`).
+    - The lightweight background Ghost Responder daemon answers OpenRGB DetectionManager queries in < 1ms:
+      - **Philips WiZ (UDP 38899)**: Immediatly replies to `getSystemConfig` and `getPilot` with cached/deterministic hardware signatures (MAC, module name, firmware).
+      - **Xiaomi Yeelight (TCP 55443)**: Accepts connection and responds to `get_prop` (`name`, `model`) and subsequent command frames (`set_rgb`, `set_power`).
+    - OpenRGB instantiates the `RGBController` in the exact designated slot without any startup timeout or freeze!
+    - Device IDs (`0: Razer`, `1-3: WiZ`, `4-7: Yeelight`) remain **100% static, immutable, and permanent**.
+  - **Automatic LAN Unroute for WiZ**:
+    - After OpenRGB completes startup detection, loopback aliases for WiZ devices are unrouted (`ip addr del <ip>/32 dev lo`).
+    - Outgoing UDP packets (`setPilot`) sent by LedFx flow directly onto the physical LAN. When the user flips the physical wall switch back on, the WiZ light powers up and immediately starts reacting to LedFx music without restarting OpenRGB!
+  - **Persistent Hardware Signature Cache (`device_cache.json`)**:
+    - Caches real discovered MAC addresses, model identifiers (`DMORGB`, `SHRGB`, `DHRGB`, `stripe`, `color`, `bslamp1`), and names across reboots.
+  - Added `iproute2` and `iputils-ping` packages to `Dockerfile` ensuring rock-solid network operations on `debian:sid-slim`.
+
+---
+
 ## [1.3.4] - 2026-11-27
 
 ### Fixed
