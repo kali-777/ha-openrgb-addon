@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.5] - 2026-11-27
+
+### Fixed
+- **ddcutil CLI Syntax & Option Ordering Correction**:
+  - Fixed ddcutil global option ordering (`ddcutil --bus <N> getvcp ...` instead of invalid `ddcutil getvcp ... --bus <N>`), eliminating syntax errors when communicating with the monitor.
+  - Replaced invalid `ddcutil --bus <N> detect` with direct MCCS feature probing (`VCP 0x60` Input Source and `VCP 0x10` Brightness) on each I2C bus.
+  - Probes all 12 I2C buses in parallel in reverse order (`11, 10, ...`), discovering the display bus (Bus 11) within 300ms.
+- **Real-Time `/diag` REST Diagnostics Endpoint**:
+  - Added `/diag` HTTP endpoint on port 6743 with support for query parameters (`?bus=11`, `?cmd=...`), defaulting to instantaneous bus 11 MCCS query.
+- **Accurate Input Source Synchronization**:
+  - Automatically queries and publishes the physical monitor input state (`HDMI-1`, `DisplayPort-1`, `USB-C`) immediately upon startup and on input switch.
+
+---
+
+## [1.2.4] - 2026-11-26
+
+### Fixed
+- **Startup Banner and Version Synchronization**:
+  - Synchronized `run.sh` banner and `config.yaml` versioning.
+
+---
+
 ## [1.2.3] - 2026-11-26
 
 ### Fixed
