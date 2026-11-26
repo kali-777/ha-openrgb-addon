@@ -2,7 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.3.1] - 2026-11-27
+## [1.3.2] - 2026-11-27
+
+### Fixed
+- **Debian Bookworm Base with APT-Pinned OpenRGB from Trixie**:
+  - `ddcutil` pinned to Debian Bookworm (`1.4.1-1`), completely eliminating the `ddcutil 2.x` Intel Alder Lake-N DP AUX hang and `flock` errors.
+  - `openrgb` installed via Debian repository with complete dependency resolution.
 
 ### Fixed
 - **Direct `FROM debian:bookworm-slim` Base Image**:

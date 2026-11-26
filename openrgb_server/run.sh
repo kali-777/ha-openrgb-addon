@@ -31,7 +31,7 @@ cleanup() {
 trap cleanup EXIT SIGINT SIGTERM
 
 echo "=================================================================="
-echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.3.1)"
+echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.3.2)"
 echo "=================================================================="
 echo "OpenRGB Version : $(openrgb --version 2>/dev/null | head -n 1 || echo 'OpenRGB 1.0+')"
 echo "Bind Address    : ${SERVER_HOST}:${SERVER_PORT}"
