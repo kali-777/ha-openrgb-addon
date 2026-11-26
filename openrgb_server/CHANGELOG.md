@@ -2,7 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.3.0] - 2026-11-27
+## [1.3.1] - 2026-11-27
+
+### Fixed
+- **Direct `FROM debian:bookworm-slim` Base Image**:
+  - Removed `ARG BUILD_FROM` so Supervisor cannot inject Alpine Linux (`ghcr.io/home-assistant/base:latest`).
+  - Native Debian Bookworm with `ddcutil 1.4.1` and upstream `OpenRGB 1.1`.
 
 ### Changed
 - **Migrate Base OS to Debian 12 Bookworm with `ddcutil 1.4.1`**:

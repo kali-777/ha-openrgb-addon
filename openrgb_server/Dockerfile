@@ -1,11 +1,8 @@
-ARG BUILD_FROM=debian:bookworm-slim
-FROM ${BUILD_FROM}
+FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     QT_QPA_PLATFORM=offscreen \
     LANG=C.UTF-8
-
-ARG BUILD_ARCH=amd64
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -24,9 +21,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libqt5core5a \
     libqt5gui5 \
     libqt5widgets5 \
-    && case "${BUILD_ARCH}" in \
-         "aarch64"|"arm64") OPENRGB_ARCH="arm64" ;; \
-         "armv7"|"armhf"|"arm") OPENRGB_ARCH="armhf" ;; \
+    bash \
+    && case "$(dpkg --print-architecture)" in \
+         "arm64"|"aarch64") OPENRGB_ARCH="arm64" ;; \
+         "armhf"|"armv7"|"arm") OPENRGB_ARCH="armhf" ;; \
          *) OPENRGB_ARCH="amd64" ;; \
        esac \
     && echo "Downloading OpenRGB 1.1 for ${OPENRGB_ARCH} on Debian Bookworm..." \
