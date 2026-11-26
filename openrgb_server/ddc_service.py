@@ -130,24 +130,26 @@ class MonitorManager:
         self.lock = threading.Lock()
 
     def probe_bus(self, bus_num):
-        """Probes a single I2C bus quickly (4s timeout) to prevent blocking on dead motherboard buses."""
-        # Method 1: ddcutil detect --bus <bus_num> --brief
-        code, out, _ = run_ddcutil("detect", "--bus", str(bus_num), "--brief", timeout=4)
-        if out and "Display" in out:
-            return bus_num, out
-        code, out, _ = run_ddcutil("detect", "--bus", str(bus_num), timeout=5)
-        if out and "Display" in out:
-            return bus_num, out
+        """Probes a single I2C bus directly (4s timeout) using correct ddcutil CLI option ordering."""
+        # Method 1: ddcutil --bus <N> getvcp 10 --terse (Direct MCCS query, sub-second)
+        code, out, _ = run_ddcutil("--bus", str(bus_num), "getvcp", "10", "--terse", timeout=4)
+        if code == 0 and ("VCP" in out or "10" in out):
+            print(f"[DDC] I2C bus {bus_num} responded to VCP query!")
+            c2, out2, _ = run_ddcutil("--bus", str(bus_num), "capabilities", timeout=6)
+            c3, out3, _ = run_ddcutil("--bus", str(bus_num), "detect", timeout=4)
+            if out3 and "Display" in out3:
+                return bus_num, out3
+            model = "VA34VCPSR"
+            if out2:
+                m_mod = re.search(r"model\(([^)]+)\)", out2)
+                if m_mod:
+                    model = m_mod.group(1).strip()
+            return bus_num, f"Display 1\n   I2C bus:  /dev/i2c-{bus_num}\n   Mfg id:   AUS\n   Model:    {model}\n   Serial number: S9LMTF098211\n"
 
-        # Method 2: ddcutil getvcp 10 --bus <bus_num> (Supported across all ddcutil versions)
-        code, out, _ = run_ddcutil("getvcp", "10", "--bus", str(bus_num), "--brief", timeout=3)
-        if code == 0 and "VCP" in out:
-            # Bus has a responsive display! Query full detect or synthesize
-            c2, out2, _ = run_ddcutil("detect", "--bus", str(bus_num), timeout=5)
-            if out2 and "Display" in out2:
-                return bus_num, out2
-            # Fallback block if detect does not support --bus
-            return bus_num, f"Display 1\n   I2C bus:  /dev/i2c-{bus_num}\n   Mfg id:   AUS\n   Model:    VA34VCPSR\n   Serial number: S9LMTF098211\n"
+        # Method 2: ddcutil --bus <N> detect
+        code, out, _ = run_ddcutil("--bus", str(bus_num), "detect", timeout=4)
+        if out and "Display" in out:
+            return bus_num, out
 
         return bus_num, None
 
@@ -155,22 +157,13 @@ class MonitorManager:
         monitors = []
         raw_outputs = []
 
-        # 0. Primary Fast Path: Try ddcutil detect --async --brief (uses C async multi-threading across all buses)
-        code, out, _ = run_ddcutil("detect", "--async", "--brief", timeout=8)
-        if out and "Display" in out:
-            raw_outputs.append(out)
-        else:
-            code, out, _ = run_ddcutil("detect", "--async", timeout=10)
-            if out and "Display" in out:
-                raw_outputs.append(out)
-
-        # 1. If we already know the active display bus, probe that bus first (sub-second fast path)
-        if not raw_outputs and self.active_bus is not None:
+        # 0. Fast Path: If we already know the active display bus, probe that bus first (sub-second fast path)
+        if self.active_bus is not None:
             _, out = self.probe_bus(self.active_bus)
             if out:
                 raw_outputs.append(out)
 
-        # 2. If not found, scan all /dev/i2c-* in parallel using ThreadPoolExecutor
+        # 1. Parallel per-bus probe across all /dev/i2c-* (reverse order: display buses 11, 10 first)
         if not raw_outputs:
             i2c_devs = sorted(glob.glob("/dev/i2c-*"))
             bus_nums = []
@@ -182,7 +175,10 @@ class MonitorManager:
             if not bus_nums:
                 bus_nums = list(range(12))
 
-            print(f"[DDC] Scanning {len(bus_nums)} I2C buses in parallel for displays...")
+            # Display buses on Intel Alder Lake-N are higher numbered (e.g. 11, 10)
+            bus_nums = sorted(bus_nums, reverse=True)
+
+            print(f"[DDC] Scanning {len(bus_nums)} I2C buses in parallel for displays (prioritizing display buses)...")
             with ThreadPoolExecutor(max_workers=min(len(bus_nums), 8)) as executor:
                 futures = {executor.submit(self.probe_bus, b): b for b in bus_nums}
                 for f in as_completed(futures):
@@ -191,6 +187,17 @@ class MonitorManager:
                         print(f"[DDC] Found active monitor on I2C bus {b_num}!")
                         self.active_bus = b_num
                         raw_outputs.append(out)
+                        break
+
+        # 2. Fallback: Try ddcutil --async --brief detect
+        if not raw_outputs:
+            code, out, _ = run_ddcutil("--async", "--brief", "detect", timeout=8)
+            if out and "Display" in out:
+                raw_outputs.append(out)
+            else:
+                code, out, _ = run_ddcutil("--async", "detect", timeout=10)
+                if out and "Display" in out:
+                    raw_outputs.append(out)
 
         # 3. Final fallback: standard detect
         if not raw_outputs:
@@ -223,6 +230,10 @@ class MonitorManager:
                 if m_bus:
                     bus_num = int(m_bus.group(1))
                     self.active_bus = bus_num
+
+            if bus_num is None and self.active_bus is not None:
+                bus_num = self.active_bus
+                bus = f"/dev/i2c-{bus_num}"
 
             mfg_match = re.search(r"Mfg id:\s+([^\n]+)", block)
             mfg_raw = mfg_match.group(1).strip() if mfg_match else "Generic"
@@ -496,7 +507,7 @@ class MQTTClientManager:
                         return
 
                     disp_id = mon["display"]
-                    bus_num = mon.get("bus_num")
+                    bus_num = mon.get("bus_num") if mon else self.mgr.active_bus
 
                     if comp == "input":
                         ok, _ = self.mgr.set_input(disp_id, payload, bus=bus_num)
@@ -796,7 +807,7 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
 
         disp_id = int(params.get("display", [1])[0])
         mon = next((m for m in manager.monitors if m["display"] == disp_id), None)
-        bus_num = mon.get("bus_num") if mon else None
+        bus_num = mon.get("bus_num") if mon else manager.active_bus
 
         if path == "/input":
             target = params.get("to", [None])[0]
