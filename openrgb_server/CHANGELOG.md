@@ -2,7 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.3.3] - 2026-11-27
+## [1.3.4] - 2026-11-27
+
+### Fixed
+- **Clean ddcutil 1.4.1 Option Compatibility**:
+  - Removed `--disable-cross-instance-locks` (which was a ddcutil 2.x only flag) so `ddcutil 1.4.1` executes cleanly without unrecognized option errors.
+  - Retained `--sleep-multiplier 2` for rock-solid DisplayPort AUX timing.
 
 ### Fixed
 - **Stable `ddcutil 1.4.1` on `debian:sid-slim`**:

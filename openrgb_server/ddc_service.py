@@ -109,8 +109,8 @@ INPUT_NAME_TO_HEX.update({
 
 
 def run_ddcutil(*args, timeout=15):
-    # Pass --disable-cross-instance-locks and --sleep-multiplier 2 for DP AUX stability and to prevent flock timeouts
-    cmd = ["ddcutil", "--disable-cross-instance-locks"]
+    # Pass --sleep-multiplier 2 for DP AUX timing stability on Intel Alder Lake-N
+    cmd = ["ddcutil"]
     if "--sleep-multiplier" not in args:
         cmd.extend(["--sleep-multiplier", "2"])
     cmd.extend(list(args))
