@@ -31,7 +31,7 @@ cleanup() {
 trap cleanup EXIT SIGINT SIGTERM
 
 echo "=================================================================="
-echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.2.5)"
+echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.2.6)"
 echo "=================================================================="
 echo "OpenRGB Version : $(openrgb --version 2>/dev/null | head -n 1 || echo 'OpenRGB 1.0+')"
 echo "Bind Address    : ${SERVER_HOST}:${SERVER_PORT}"
@@ -285,7 +285,7 @@ else:
 if "Detectors" not in cfg or not isinstance(cfg["Detectors"], dict):
     cfg["Detectors"] = {"detectors": {}}
 if "detectors" not in cfg["Detectors"]:
-    cfg["Detectors"][\"detectors\"] = {}
+    cfg["Detectors"]["detectors"] = {}
 
 cfg["Detectors"]["detectors"]["HyperX DuoCast"] = True
 cfg["Detectors"]["detectors"]["HyperX Quadcast S"] = True
