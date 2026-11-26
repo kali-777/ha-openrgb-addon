@@ -781,6 +781,24 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/")
         params = parse_qs(parsed.query)
 
+        if path == "/diag":
+            bus_arg = params.get("bus", [None])[0]
+            cmd_arg = params.get("cmd", [None])[0]
+            if cmd_arg:
+                args = cmd_arg.split()
+            elif bus_arg is not None:
+                args = ["--bus", str(bus_arg), "getvcp", "10", "--verbose"]
+            else:
+                args = ["detect", "--brief"]
+            c_code, c_out, c_err = run_ddcutil(*args, timeout=12)
+            self.send_json(200, {
+                "args": args,
+                "returncode": c_code,
+                "stdout": c_out,
+                "stderr": c_err
+            })
+            return
+
         if path in ("", "/status", "/displays"):
             self.send_json(200, {
                 "status": "ok",
