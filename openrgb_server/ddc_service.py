@@ -106,13 +106,14 @@ INPUT_NAME_TO_HEX.update({
 })
 
 
-def run_ddcutil(*args):
-    cmd = ["ddcutil"] + list(args)
+def run_ddcutil(*args, timeout=35):
+    # Pass --sleep-multiplier 2 for robust I2C probing on modern SoCs
+    cmd = ["ddcutil", "--sleep-multiplier", "2"] + list(args)
     try:
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
         return res.returncode, res.stdout, res.stderr
     except subprocess.TimeoutExpired:
-        return -1, "", "Timeout waiting for ddcutil"
+        return -1, "", f"Timeout waiting for ddcutil ({timeout}s)"
     except Exception as e:
         return -1, "", str(e)
 
@@ -127,7 +128,11 @@ class MonitorManager:
         self.lock = threading.Lock()
 
     def detect_monitors(self):
-        code, out, err = run_ddcutil("detect")
+        code, out, err = run_ddcutil("detect", "--brief", timeout=40)
+        # If --brief yields empty, fallback to standard detect with 45s timeout
+        if not out or "Display" not in out:
+            code, out, err = run_ddcutil("detect", timeout=45)
+
         monitors = []
 
         if not out or "Display" not in out:
@@ -214,7 +219,7 @@ class MonitorManager:
         return monitors
 
     def query_supported_inputs(self, disp_id):
-        code, out, _ = run_ddcutil("--display", str(disp_id), "capabilities")
+        code, out, _ = run_ddcutil("--display", str(disp_id), "capabilities", timeout=25)
         inputs = []
         if out:
             # 1. Match 'Feature: 60 (Input Source)' block and extract all hex codes before ':'
@@ -246,7 +251,7 @@ class MonitorManager:
 
     def get_vcp(self, disp_id, vcp_code):
         hex_code = f"{vcp_code:02x}"
-        code, out, _ = run_ddcutil("--display", str(disp_id), "getvcp", hex_code, "--terse")
+        code, out, _ = run_ddcutil("--display", str(disp_id), "getvcp", hex_code, "--terse", timeout=15)
         if code == 0 and out:
             parts = out.strip().split()
             # Standard VCP: VCP 10 C 50 100
@@ -267,7 +272,7 @@ class MonitorManager:
                         pass
 
         # Fallback to non-terse parser
-        code, out, _ = run_ddcutil("--display", str(disp_id), "getvcp", hex_code)
+        code, out, _ = run_ddcutil("--display", str(disp_id), "getvcp", hex_code, timeout=15)
         if code == 0 and out:
             m = re.search(r"current value\s*=\s*(\d+)", out, re.I)
             if m:
@@ -291,7 +296,7 @@ class MonitorManager:
         else:
             val_str = str(value)
 
-        code, out, err = run_ddcutil("--display", str(disp_id), "setvcp", vcp_str, val_str)
+        code, out, err = run_ddcutil("--display", str(disp_id), "setvcp", vcp_str, val_str, timeout=20)
         if code == 0:
             return True, "OK"
         return False, err.strip() or out.strip() or f"Error code {code}"
@@ -551,7 +556,7 @@ class MQTTClientManager:
 
             # 4. Speaker Volume Number Entity (if supported)
             if mon["has_audio"]:
-                vol_disc_topic = f"homeassistant/number/{dev_id}_volume/config"
+                vol_disc_topic = f"homeassistant/number/{dev_id}_speaker_volume/config"
                 vol_config = {
                     "name": "Speaker Volume",
                     "has_entity_name": True,
@@ -572,7 +577,7 @@ class MQTTClientManager:
 
             # 5. Audio Mute Switch Entity (if supported)
             if mon["has_mute"]:
-                mute_disc_topic = f"homeassistant/switch/{dev_id}_mute/config"
+                mute_disc_topic = f"homeassistant/switch/{dev_id}_audio_mute/config"
                 mute_config = {
                     "name": "Audio Mute",
                     "has_entity_name": True,
@@ -613,6 +618,10 @@ class MQTTClientManager:
                     clean_leg = clean_identifier(leg)
                     btn_disc_topic = f"homeassistant/button/{dev_id}_{clean_leg}/config"
                     self.client.publish(btn_disc_topic, "", retain=True)
+
+            # Clear legacy volume and mute discovery topics from older schemas
+            self.client.publish(f"homeassistant/number/{dev_id}_volume/config", "", retain=True)
+            self.client.publish(f"homeassistant/switch/{dev_id}_mute/config", "", retain=True)
 
             # Subscriptions
             self.client.subscribe(f"ha_openrgb/ddc/{dev_id}/input/set")
