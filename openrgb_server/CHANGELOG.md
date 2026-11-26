@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-11-27
+
+### Changed
+- **Migrate Base OS to Debian 12 Bookworm with `ddcutil 1.4.1`**:
+  - Replaced `debian:sid-slim` with stable `debian:bookworm-slim` via `build.yaml` and `Dockerfile`.
+  - Replaced unstable `ddcutil 2.x` (which hangs and deadlocks on Intel Alder Lake-N DisplayPort AUX with ASUS feature `0xdd`) with battle-tested `ddcutil 1.4.1-1`.
+  - Installs official upstream `OpenRGB 1.1` release deb for Debian Bookworm across `amd64`, `arm64`, and `armhf`.
+  - Completely eliminates `flock_lock_by_fd` deadlocks, timeouts, and console freezes.
+
+---
+
 ## [1.2.8] - 2026-11-27
 
 ### Fixed
