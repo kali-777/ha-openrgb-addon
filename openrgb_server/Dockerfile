@@ -12,13 +12,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     usbutils \
     i2c-tools \
     udev \
+    libhidapi-hidraw0 \
+    libhidapi-libusb0 \
+    libhidapi-dev \
+    libusb-1.0-0 \
+    libusb-1.0-0-dev \
     ca-certificates \
     curl \
     kmod \
     libdrm2 \
     libglib2.0-0t64 \
     libgudev-1.0-0 \
-    libusb-1.0-0 \
     libxrandr2 \
     iproute2 \
     iputils-ping \
@@ -28,12 +32,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && (dpkg -i /tmp/libddcutil.deb /tmp/ddcutil.deb || apt-get install -y --fix-broken --no-install-recommends) \
     && rm -f /tmp/libddcutil.deb /tmp/ddcutil.deb \
     && mkdir -p /etc/udev/rules.d \
-    && if [ -f /usr/lib/udev/rules.d/60-openrgb.rules ]; then \
-         mv /usr/lib/udev/rules.d/60-openrgb.rules /etc/udev/rules.d/60-openrgb.rules; \
-       else \
-         touch /etc/udev/rules.d/60-openrgb.rules; \
-       fi \
-    && rm -f /usr/lib/udev/rules.d/60-openrgb.rules /lib/udev/rules.d/60-openrgb.rules \
+    && (QT_QPA_PLATFORM=offscreen openrgb --generate-udev-rules /etc/udev/rules.d/60-openrgb.rules || true) \
+    && rm -f /usr/lib/udev/rules.d/60-openrgb.rules /lib/udev/rules.d/60-openrgb.rules 2>/dev/null || true \
     && ldconfig \
     && rm -rf /var/lib/apt/lists/*
 

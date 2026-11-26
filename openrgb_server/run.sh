@@ -8,9 +8,15 @@ GHOST_FILE="${CONFIG_DIR}/ghost_devices.json"
 
 mkdir -p "${CONFIG_DIR}" /etc/udev/rules.d
 
-# Keep ONLY /etc/udev/rules.d/60-openrgb.rules so OpenRGB sees neither missing nor duplicate udev rules
-touch /etc/udev/rules.d/60-openrgb.rules
-rm -f /usr/lib/udev/rules.d/60-openrgb.rules
+# Ensure full read/write permissions for all USB and HIDRAW devices
+chmod -R a+rw /dev/hidraw* /dev/bus/usb 2>/dev/null || true
+
+# Generate official OpenRGB udev rules if missing or empty, avoiding duplicate rule warnings
+if [ ! -s /etc/udev/rules.d/60-openrgb.rules ]; then
+    echo "Generating OpenRGB udev rules..."
+    QT_QPA_PLATFORM=offscreen openrgb --generate-udev-rules /etc/udev/rules.d/60-openrgb.rules 2>/dev/null || touch /etc/udev/rules.d/60-openrgb.rules
+fi
+rm -f /usr/lib/udev/rules.d/60-openrgb.rules /lib/udev/rules.d/60-openrgb.rules 2>/dev/null || true
 
 # Read options from Home Assistant /data/options.json
 SERVER_PORT=$(jq -r '.server_port // 6742' "${OPTIONS_FILE}")
@@ -36,7 +42,7 @@ cleanup() {
 trap cleanup EXIT SIGINT SIGTERM
 
 echo "=================================================================="
-echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.4.0)"
+echo " Starting OpenRGB SDK Server & DDC/CI Add-on (v1.4.1)"
 echo "=================================================================="
 echo "OpenRGB Version : $(openrgb --version 2>/dev/null | head -n 1 || echo 'OpenRGB 1.0+')"
 echo "Bind Address    : ${SERVER_HOST}:${SERVER_PORT}"
@@ -316,14 +322,9 @@ if online_kasa:
 else:
     cfg["KasaSmartDevices"] = None
 
-if "Detectors" not in cfg or not isinstance(cfg["Detectors"], dict):
-    cfg["Detectors"] = {"detectors": {}}
-if "detectors" not in cfg["Detectors"]:
-    cfg["Detectors"]["detectors"] = {}
-
-cfg["Detectors"]["detectors"]["HyperX DuoCast"] = True
-cfg["Detectors"]["detectors"]["HyperX Quadcast S"] = True
-cfg["Detectors"]["detectors"]["HyperX QuadCast 2 S"] = True
+# Remove restrictive detector overrides to allow OpenRGB to run all USB HID detectors natively
+cfg.pop("Detectors", None)
+cfg.pop("detectors", None)
 
 with open(cfg_file, "w") as f:
     json.dump(cfg, f, indent=4)
@@ -365,6 +366,11 @@ if [ -f "${GHOST_FILE}" ]; then
 fi
 
 echo "------------------------------------------------------------------"
+echo "Connected USB & HIDRAW Devices:"
+lsusb 2>/dev/null || echo "lsusb unavailable"
+ls -la /dev/hidraw* 2>/dev/null || echo "No /dev/hidraw nodes found"
+echo "------------------------------------------------------------------"
+
 if [ "${LIST_DEVICES}" = "true" ]; then
     echo "Detected OpenRGB Devices (use these IDs in LedFx):"
     QT_QPA_PLATFORM=offscreen openrgb --config "${CONFIG_DIR}" --noautoconnect --list-devices 2>&1 \

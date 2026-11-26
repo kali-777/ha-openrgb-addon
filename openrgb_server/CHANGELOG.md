@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.1] - 2026-11-27
+
+### Fixed
+- **Restore USB HID Detection for HyperX DuoCast / QuadCast Microphones**:
+  - Restored `libhidapi-hidraw0`, `libhidapi-libusb0`, `libhidapi-dev`, `libusb-1.0-0`, and `libusb-1.0-0-dev` packages in `Dockerfile`. OpenRGB's HyperX USB driver requires the unversioned `libhidapi-hidraw.so` symlink (provided by `libhidapi-dev`) to successfully `dlopen` the HIDAPI library at runtime.
+  - Generates official OpenRGB udev rules using `openrgb --generate-udev-rules /etc/udev/rules.d/60-openrgb.rules` directly into the container.
+  - Automatically grants full read/write permissions to `/dev/hidraw*` and `/dev/bus/usb` nodes at startup.
+  - Removed restrictive `Detectors` dictionary in `OpenRGB.json` so all native OpenRGB USB peripheral detectors execute freely without filtering.
+  - Added startup logging for `lsusb` and `/dev/hidraw*` device nodes.
+
+---
+
 ## [1.4.0] - 2026-11-27
 
 ### Added
