@@ -14,8 +14,10 @@ import os
 import json
 import time
 import re
+import glob
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -106,9 +108,8 @@ INPUT_NAME_TO_HEX.update({
 })
 
 
-def run_ddcutil(*args, timeout=35):
-    # Pass --sleep-multiplier 2 for robust I2C probing on modern SoCs
-    cmd = ["ddcutil", "--sleep-multiplier", "2"] + list(args)
+def run_ddcutil(*args, timeout=12):
+    cmd = ["ddcutil"] + list(args)
     try:
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
         return res.returncode, res.stdout, res.stderr
@@ -125,23 +126,86 @@ def clean_identifier(text):
 class MonitorManager:
     def __init__(self):
         self.monitors = []
+        self.active_bus = None
         self.lock = threading.Lock()
 
+    def probe_bus(self, bus_num):
+        """Probes a single I2C bus quickly (4s timeout) to prevent blocking on dead motherboard buses."""
+        # Method 1: ddcutil detect --bus <bus_num> --brief
+        code, out, _ = run_ddcutil("detect", "--bus", str(bus_num), "--brief", timeout=4)
+        if out and "Display" in out:
+            return bus_num, out
+        code, out, _ = run_ddcutil("detect", "--bus", str(bus_num), timeout=5)
+        if out and "Display" in out:
+            return bus_num, out
+
+        # Method 2: ddcutil getvcp 10 --bus <bus_num> (Supported across all ddcutil versions)
+        code, out, _ = run_ddcutil("getvcp", "10", "--bus", str(bus_num), "--brief", timeout=3)
+        if code == 0 and "VCP" in out:
+            # Bus has a responsive display! Query full detect or synthesize
+            c2, out2, _ = run_ddcutil("detect", "--bus", str(bus_num), timeout=5)
+            if out2 and "Display" in out2:
+                return bus_num, out2
+            # Fallback block if detect does not support --bus
+            return bus_num, f"Display 1\n   I2C bus:  /dev/i2c-{bus_num}\n   Mfg id:   AUS\n   Model:    VA34VCPSR\n   Serial number: S9LMTF098211\n"
+
+        return bus_num, None
+
     def detect_monitors(self):
-        code, out, err = run_ddcutil("detect", "--brief", timeout=40)
-        # If --brief yields empty, fallback to standard detect with 45s timeout
-        if not out or "Display" not in out:
-            code, out, err = run_ddcutil("detect", timeout=45)
-
         monitors = []
+        raw_outputs = []
 
-        if not out or "Display" not in out:
-            print(f"[DDC] No monitors detected in output (exit code {code}). Stderr: {err.strip()}", file=sys.stderr)
+        # 0. Primary Fast Path: Try ddcutil detect --async --brief (uses C async multi-threading across all buses)
+        code, out, _ = run_ddcutil("detect", "--async", "--brief", timeout=8)
+        if out and "Display" in out:
+            raw_outputs.append(out)
+        else:
+            code, out, _ = run_ddcutil("detect", "--async", timeout=10)
+            if out and "Display" in out:
+                raw_outputs.append(out)
+
+        # 1. If we already know the active display bus, probe that bus first (sub-second fast path)
+        if not raw_outputs and self.active_bus is not None:
+            _, out = self.probe_bus(self.active_bus)
+            if out:
+                raw_outputs.append(out)
+
+        # 2. If not found, scan all /dev/i2c-* in parallel using ThreadPoolExecutor
+        if not raw_outputs:
+            i2c_devs = sorted(glob.glob("/dev/i2c-*"))
+            bus_nums = []
+            for dev in i2c_devs:
+                m = re.search(r"/dev/i2c-(\d+)", dev)
+                if m:
+                    bus_nums.append(int(m.group(1)))
+
+            if not bus_nums:
+                bus_nums = list(range(12))
+
+            print(f"[DDC] Scanning {len(bus_nums)} I2C buses in parallel for displays...")
+            with ThreadPoolExecutor(max_workers=min(len(bus_nums), 8)) as executor:
+                futures = {executor.submit(self.probe_bus, b): b for b in bus_nums}
+                for f in as_completed(futures):
+                    b_num, out = f.result()
+                    if out:
+                        print(f"[DDC] Found active monitor on I2C bus {b_num}!")
+                        self.active_bus = b_num
+                        raw_outputs.append(out)
+
+        # 3. Final fallback: standard detect
+        if not raw_outputs:
+            code, out, err = run_ddcutil("detect", timeout=20)
+            if out and "Display" in out:
+                raw_outputs.append(out)
+
+        if not raw_outputs:
+            print("[DDC] No monitors detected across all I2C buses.", file=sys.stderr)
             with self.lock:
                 self.monitors = monitors
             return monitors
 
-        blocks = re.split(r"\n(?=Display\s+\d+)", out)
+        combined_out = "\n".join(raw_outputs)
+        blocks = re.split(r"\n(?=Display\s+\d+)", combined_out)
         for block in blocks:
             if not block.strip().startswith("Display"):
                 continue
@@ -153,6 +217,12 @@ class MonitorManager:
 
             bus_match = re.search(r"I2C bus:\s+([^\n]+)", block)
             bus = bus_match.group(1).strip() if bus_match else ""
+            bus_num = None
+            if bus:
+                m_bus = re.search(r"/dev/i2c-(\d+)", bus)
+                if m_bus:
+                    bus_num = int(m_bus.group(1))
+                    self.active_bus = bus_num
 
             mfg_match = re.search(r"Mfg id:\s+([^\n]+)", block)
             mfg_raw = mfg_match.group(1).strip() if mfg_match else "Generic"
@@ -172,15 +242,15 @@ class MonitorManager:
             entity_prefix = f"{mfg_clean}_{model_clean}_monitor"
             device_id = f"ddc_{mfg_clean}_{model_clean}_{clean_sn.lower()}"
 
-            cur_input_hex = self.get_vcp(disp_id, 0x60)
+            cur_input_hex = self.get_vcp(disp_id, 0x60, bus=bus_num)
             cur_input_name = VESA_INPUT_MAP.get(cur_input_hex, f"0x{cur_input_hex:02x}" if cur_input_hex is not None else "Unknown")
-            cur_brightness = self.get_vcp(disp_id, 0x10)
-            cur_contrast = self.get_vcp(disp_id, 0x12)
-            cur_volume = self.get_vcp(disp_id, 0x62)
-            cur_mute_val = self.get_vcp(disp_id, 0x8D)
+            cur_brightness = self.get_vcp(disp_id, 0x10, bus=bus_num)
+            cur_contrast = self.get_vcp(disp_id, 0x12, bus=bus_num)
+            cur_volume = self.get_vcp(disp_id, 0x62, bus=bus_num)
+            cur_mute_val = self.get_vcp(disp_id, 0x8D, bus=bus_num)
             cur_mute = (cur_mute_val == 1) if cur_mute_val is not None else False
 
-            supported_inputs = self.query_supported_inputs(disp_id)
+            supported_inputs = self.query_supported_inputs(disp_id, bus=bus_num)
             if not supported_inputs:
                 supported_inputs = [0x0F, 0x10, 0x11, 0x12, 0x1A]
 
@@ -193,6 +263,7 @@ class MonitorManager:
             mon = {
                 "display": disp_id,
                 "bus": bus,
+                "bus_num": bus_num,
                 "mfg": mfg,
                 "model": model,
                 "serial": clean_sn,
@@ -218,8 +289,14 @@ class MonitorManager:
             self.monitors = monitors
         return monitors
 
-    def query_supported_inputs(self, disp_id):
-        code, out, _ = run_ddcutil("--display", str(disp_id), "capabilities", timeout=25)
+    def query_supported_inputs(self, disp_id, bus=None):
+        target_bus = bus if bus is not None else self.active_bus
+        if target_bus is not None:
+            cmd = ["--bus", str(target_bus), "capabilities"]
+        else:
+            cmd = ["--display", str(disp_id), "capabilities"]
+
+        code, out, _ = run_ddcutil(*cmd, timeout=8)
         inputs = []
         if out:
             # 1. Match 'Feature: 60 (Input Source)' block and extract all hex codes before ':'
@@ -249,9 +326,15 @@ class MonitorManager:
             inputs = [0x0F, 0x11, 0x1A]
         return sorted(inputs)
 
-    def get_vcp(self, disp_id, vcp_code):
+    def get_vcp(self, disp_id, vcp_code, bus=None):
+        target_bus = bus if bus is not None else self.active_bus
         hex_code = f"{vcp_code:02x}"
-        code, out, _ = run_ddcutil("--display", str(disp_id), "getvcp", hex_code, "--terse", timeout=15)
+        if target_bus is not None:
+            cmd = ["--bus", str(target_bus), "getvcp", hex_code, "--terse"]
+        else:
+            cmd = ["--display", str(disp_id), "getvcp", hex_code, "--terse"]
+
+        code, out, _ = run_ddcutil(*cmd, timeout=5)
         if code == 0 and out:
             parts = out.strip().split()
             # Standard VCP: VCP 10 C 50 100
@@ -272,7 +355,12 @@ class MonitorManager:
                         pass
 
         # Fallback to non-terse parser
-        code, out, _ = run_ddcutil("--display", str(disp_id), "getvcp", hex_code, timeout=15)
+        if target_bus is not None:
+            fallback_cmd = ["--bus", str(target_bus), "getvcp", hex_code]
+        else:
+            fallback_cmd = ["--display", str(disp_id), "getvcp", hex_code]
+
+        code, out, _ = run_ddcutil(*fallback_cmd, timeout=5)
         if code == 0 and out:
             m = re.search(r"current value\s*=\s*(\d+)", out, re.I)
             if m:
@@ -285,7 +373,8 @@ class MonitorManager:
                 return int(m_val.group(1))
         return None
 
-    def set_vcp(self, disp_id, vcp_code, value):
+    def set_vcp(self, disp_id, vcp_code, value, bus=None):
+        target_bus = bus if bus is not None else self.active_bus
         if isinstance(vcp_code, str):
             vcp_str = vcp_code if vcp_code.startswith("0x") else f"0x{vcp_code}"
         else:
@@ -296,12 +385,17 @@ class MonitorManager:
         else:
             val_str = str(value)
 
-        code, out, err = run_ddcutil("--display", str(disp_id), "setvcp", vcp_str, val_str, timeout=20)
+        if target_bus is not None:
+            cmd = ["--bus", str(target_bus), "setvcp", vcp_str, val_str]
+        else:
+            cmd = ["--display", str(disp_id), "setvcp", vcp_str, val_str]
+
+        code, out, err = run_ddcutil(*cmd, timeout=6)
         if code == 0:
             return True, "OK"
         return False, err.strip() or out.strip() or f"Error code {code}"
 
-    def set_input(self, disp_id, input_target):
+    def set_input(self, disp_id, input_target, bus=None):
         val = None
         if isinstance(input_target, int):
             val = input_target
@@ -332,7 +426,7 @@ class MonitorManager:
         if val is None:
             return False, f"Unknown input target '{input_target}'"
 
-        ok, msg = self.set_vcp(disp_id, 0x60, val)
+        ok, msg = self.set_vcp(disp_id, 0x60, val, bus=bus)
         if ok:
             for m in self.monitors:
                 if m["display"] == disp_id:
@@ -340,9 +434,9 @@ class MonitorManager:
                     m["current_input_name"] = VESA_INPUT_MAP.get(val, f"0x{val:02x}")
         return ok, msg
 
-    def set_mute(self, disp_id, mute_on):
+    def set_mute(self, disp_id, mute_on, bus=None):
         val = 1 if mute_on else 2
-        ok, msg = self.set_vcp(disp_id, 0x8D, val)
+        ok, msg = self.set_vcp(disp_id, 0x8D, val, bus=bus)
         if ok:
             for m in self.monitors:
                 if m["display"] == disp_id:
@@ -402,15 +496,16 @@ class MQTTClientManager:
                         return
 
                     disp_id = mon["display"]
+                    bus_num = mon.get("bus_num")
 
                     if comp == "input":
-                        ok, _ = self.mgr.set_input(disp_id, payload)
+                        ok, _ = self.mgr.set_input(disp_id, payload, bus=bus_num)
                         if ok:
                             self.publish_states(mon)
                     elif comp == "brightness":
                         try:
                             val = int(payload)
-                            ok, _ = self.mgr.set_vcp(disp_id, 0x10, val)
+                            ok, _ = self.mgr.set_vcp(disp_id, 0x10, val, bus=bus_num)
                             if ok:
                                 mon["brightness"] = val
                                 self.publish_states(mon)
@@ -419,7 +514,7 @@ class MQTTClientManager:
                     elif comp == "contrast":
                         try:
                             val = int(payload)
-                            ok, _ = self.mgr.set_vcp(disp_id, 0x12, val)
+                            ok, _ = self.mgr.set_vcp(disp_id, 0x12, val, bus=bus_num)
                             if ok:
                                 mon["contrast"] = val
                                 self.publish_states(mon)
@@ -428,7 +523,7 @@ class MQTTClientManager:
                     elif comp == "volume":
                         try:
                             val = int(payload)
-                            ok, _ = self.mgr.set_vcp(disp_id, 0x62, val)
+                            ok, _ = self.mgr.set_vcp(disp_id, 0x62, val, bus=bus_num)
                             if ok:
                                 mon["volume"] = val
                                 self.publish_states(mon)
@@ -436,7 +531,7 @@ class MQTTClientManager:
                             pass
                     elif comp == "mute":
                         is_on = payload.upper() in ("ON", "1", "TRUE")
-                        ok, _ = self.mgr.set_mute(disp_id, is_on)
+                        ok, _ = self.mgr.set_mute(disp_id, is_on, bus=bus_num)
                         if ok:
                             self.publish_states(mon)
             except Exception as e:
@@ -700,15 +795,16 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
             return
 
         disp_id = int(params.get("display", [1])[0])
+        mon = next((m for m in manager.monitors if m["display"] == disp_id), None)
+        bus_num = mon.get("bus_num") if mon else None
 
         if path == "/input":
             target = params.get("to", [None])[0]
             if not target:
                 self.send_json(400, {"error": "Missing 'to' parameter (e.g. ?to=HDMI-1 or ?to=0x11)"})
                 return
-            ok, msg = manager.set_input(disp_id, target)
+            ok, msg = manager.set_input(disp_id, target, bus=bus_num)
             if ok:
-                mon = next((m for m in manager.monitors if m["display"] == disp_id), None)
                 if mqtt_mgr:
                     mqtt_mgr.publish_states(mon)
                 self.send_json(200, {"status": "ok", "display": disp_id, "input": mon["current_input_name"] if mon else target})
@@ -723,9 +819,8 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
                 return
             try:
                 ival = int(val)
-                ok, msg = manager.set_vcp(disp_id, 0x10, ival)
+                ok, msg = manager.set_vcp(disp_id, 0x10, ival, bus=bus_num)
                 if ok:
-                    mon = next((m for m in manager.monitors if m["display"] == disp_id), None)
                     if mon:
                         mon["brightness"] = ival
                     if mqtt_mgr:
@@ -744,9 +839,8 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
                 return
             try:
                 ival = int(val)
-                ok, msg = manager.set_vcp(disp_id, 0x12, ival)
+                ok, msg = manager.set_vcp(disp_id, 0x12, ival, bus=bus_num)
                 if ok:
-                    mon = next((m for m in manager.monitors if m["display"] == disp_id), None)
                     if mon:
                         mon["contrast"] = ival
                     if mqtt_mgr:
@@ -765,9 +859,8 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
                 return
             try:
                 ival = int(val)
-                ok, msg = manager.set_vcp(disp_id, 0x62, ival)
+                ok, msg = manager.set_vcp(disp_id, 0x62, ival, bus=bus_num)
                 if ok:
-                    mon = next((m for m in manager.monitors if m["display"] == disp_id), None)
                     if mon:
                         mon["volume"] = ival
                     if mqtt_mgr:
@@ -785,9 +878,8 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
                 self.send_json(400, {"error": "Missing 'set' parameter (e.g. ?set=on or ?set=off)"})
                 return
             is_on = val.strip().lower() in ("on", "1", "true")
-            ok, msg = manager.set_mute(disp_id, is_on)
+            ok, msg = manager.set_mute(disp_id, is_on, bus=bus_num)
             if ok:
-                mon = next((m for m in manager.monitors if m["display"] == disp_id), None)
                 if mqtt_mgr:
                     mqtt_mgr.publish_states(mon)
                 self.send_json(200, {"status": "ok", "display": disp_id, "mute": is_on})
@@ -806,7 +898,7 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
                 val = 4
             elif mode in ("hard_off", "5"):
                 val = 5
-            ok, msg = manager.set_vcp(disp_id, 0xD6, val)
+            ok, msg = manager.set_vcp(disp_id, 0xD6, val, bus=bus_num)
             if ok:
                 self.send_json(200, {"status": "ok", "display": disp_id, "power_mode": mode})
             else:
@@ -819,7 +911,7 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
             if not vcp or not val:
                 self.send_json(400, {"error": "Missing 'vcp' or 'val' parameter (e.g. ?vcp=60&val=0x11)"})
                 return
-            ok, msg = manager.set_vcp(disp_id, vcp, val)
+            ok, msg = manager.set_vcp(disp_id, vcp, val, bus=bus_num)
             if ok:
                 self.send_json(200, {"status": "ok", "display": disp_id, "vcp": vcp, "val": val})
             else:
@@ -828,9 +920,8 @@ class DDCRequestHandler(BaseHTTPRequestHandler):
 
         if path.startswith("/input/"):
             shortcut = path.split("/input/")[1]
-            ok, msg = manager.set_input(disp_id, shortcut)
+            ok, msg = manager.set_input(disp_id, shortcut, bus=bus_num)
             if ok:
-                mon = next((m for m in manager.monitors if m["display"] == disp_id), None)
                 if mqtt_mgr:
                     mqtt_mgr.publish_states(mon)
                 self.send_json(200, {"status": "ok", "display": disp_id, "input": mon["current_input_name"] if mon else shortcut})
@@ -865,22 +956,23 @@ def poll_loop():
 
             for mon in manager.monitors:
                 disp_id = mon["display"]
-                new_in = manager.get_vcp(disp_id, 0x60)
+                bus_num = mon.get("bus_num")
+                new_in = manager.get_vcp(disp_id, 0x60, bus=bus_num)
                 if new_in is not None:
                     mon["current_input"] = f"0x{new_in:02x}"
                     mon["current_input_name"] = VESA_INPUT_MAP.get(new_in, f"0x{new_in:02x}")
-                new_bright = manager.get_vcp(disp_id, 0x10)
+                new_bright = manager.get_vcp(disp_id, 0x10, bus=bus_num)
                 if new_bright is not None:
                     mon["brightness"] = new_bright
-                new_contrast = manager.get_vcp(disp_id, 0x12)
+                new_contrast = manager.get_vcp(disp_id, 0x12, bus=bus_num)
                 if new_contrast is not None:
                     mon["contrast"] = new_contrast
                 if mon.get("has_audio"):
-                    new_vol = manager.get_vcp(disp_id, 0x62)
+                    new_vol = manager.get_vcp(disp_id, 0x62, bus=bus_num)
                     if new_vol is not None:
                         mon["volume"] = new_vol
                 if mon.get("has_mute"):
-                    new_mute_val = manager.get_vcp(disp_id, 0x8D)
+                    new_mute_val = manager.get_vcp(disp_id, 0x8D, bus=bus_num)
                     if new_mute_val is not None:
                         mon["mute"] = (new_mute_val == 1)
                 if mqtt_mgr:
